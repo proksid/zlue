@@ -1,0 +1,4745 @@
+#!/usr/local/bin/perl
+#
+########################################
+#             >>zLUe>                  #
+# ZLUE - ZFS Live Update Environment   #
+#              proks@                  #
+########################################
+# 1.0
+# version 1.1 
+# version 1.2 
+# version 1.2.1 
+# version 1.3.1 
+# version 1.3.2 
+# version 1.3.3 
+# version 1.4.0
+# version 1.5.0
+# version 1.6.0
+# rename zjail to zfbsd
+# version 2.0.0
+# rename zfbsd to zlue
+# version 2.1.0
+
+use strict;
+#use Class::Struct;
+
+require 'zlue.conf';
+
+### global values
+package Val;
+BEGIN {}
+our $version = "2.12.8";
+our $showonly;
+our $noshowcmd = undef;
+our $debug = 0;
+our $verbose;
+our $emergency_script = "zlue_rollback";
+# zfs property's source for 'zfs get/set'
+our $zfs_ps = "local,received,default";
+
+our %lue_params_type = (
+        "lue:liveupdate" => "bool",    # yes,no
+        "lue:type" => "bool",          # system, soft, late, none
+        "lue:scheme" => "str",         # base, master, jailname
+        "lue:jname" => "str",          # base, master, jailname
+        "lue:version" => "list",       # 00,00.1,01
+        "lue:parent" => "str",         # 00
+        "lue:status" => "bool",        # current, update, outdate
+        "lue:candel" => "bool",        # yes,no
+        "lue:clone_only" => "bool",    # yes,no
+        "mountpoint" => "str",         # /usr/local
+);
+END {}
+
+### utilities
+package Util;
+BEGIN {}
+our $zfs = "/sbin/zfs";
+our $zpool = "/sbin/zpool";
+our $mount = "/sbin/mount";
+our $mount_nullfs = "/sbin/mount_nullfs";
+our $umount = "/sbin/umount";
+our $df = "/bin/df";
+our $rm = "/bin/rm";
+our $cp = "/bin/cp";
+our $mv = "/bin/mv";
+our $chmod = "/bin/chmod";
+our $mkdir = "/bin/mkdir";
+our $tar = "/usr/bin/tar";
+our $chroot = "/usr/sbin/chroot";
+END {}
+
+&main;
+
+sub main {
+
+    my ($arg);
+
+    my ($custom_jname, $dst_custom_jname);
+    my ($snapshot_version);
+    my ($mode, $params);
+
+    print "zLUe v.$Val::version\n";
+    # analize arg
+    unless ( scalar @ARGV ) {
+        syntax("help");
+        exit;
+    }
+    while ( $arg = shift @ARGV ) {
+
+        if ( $arg eq "help" ) {
+            syntax("help");
+            exit;
+        }
+
+        if ( $arg eq "--showonly" || $arg eq "-s" ) {
+            $Val::showonly = "showonly";
+            print "\n>>zLUe> Don't worry! You run 'showonly' mode.\n";
+            next;
+	}
+
+        if ( $arg eq "--verbose" || $arg eq "-v" ) {
+            $Val::verbose = "verbose";
+            print "\n>>zLUe> 'Verbose' mode.\n";
+            next;
+        }
+
+        if ( $arg eq "-d" ) {
+            $arg = shift @ARGV;
+            if($arg =~ /[1-3]/) {
+                $Val::debug = $arg;
+                next;
+            } else {
+                die "ERROR: Wrong debug level: -d (1-3)\n";
+            }
+        }
+
+        # update
+        if ( $arg eq "update" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("update") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("update") );
+            update_env($custom_jname,$snapshot_version,"all");
+            last;
+
+        # update system
+        } elsif ( $arg eq "update-system" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("update") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("update") );
+            update_env($custom_jname,$snapshot_version,"system");
+            last;
+
+        # update soft
+        } elsif ( $arg eq "update-soft" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("update") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("update") );
+            update_env($custom_jname,$snapshot_version,"soft");
+            last;
+
+        # create env
+        } elsif ( $arg eq "create-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("create") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("create") );
+            create_env($custom_jname,$snapshot_version,"all");
+            last;
+
+        # create system env
+        } elsif ( $arg eq "create-system-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("create") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("create") );
+            create_env($custom_jname,$snapshot_version,"system");
+            last;
+
+        # create soft env
+        } elsif ( $arg eq "create-soft-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("create") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("create") );
+            create_env($custom_jname,$snapshot_version,"soft");
+            last;
+
+        # init env
+        } elsif ( $arg eq "init-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("init") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("init") );
+            init_env($custom_jname,$snapshot_version,"all");
+            last;
+
+        # init env force
+        } elsif ( $arg eq "init-env-force" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("init") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("init") );
+            init_env_force($custom_jname,$snapshot_version,"all");
+            last;
+
+        # init system env
+        } elsif ( $arg eq "init-system-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("init") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("init") );
+            init_env($custom_jname,$snapshot_version,"system");
+            last;
+
+        # init soft env
+        } elsif ( $arg eq "init-soft-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("init") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("init") );
+            init_env($custom_jname,$snapshot_version,"soft");
+            last;
+
+        # rollback env
+        } elsif ( $arg eq "rollback" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("rollback") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("rollback") );
+            rollback_env($custom_jname,$snapshot_version,"all");
+            last;
+
+        # rollback system env
+        } elsif ( $arg eq "rollback-system" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("rollback") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("rollback") );
+            rollback_env($custom_jname,$snapshot_version,"system");
+            last;
+
+        # rollback soft env
+        } elsif ( $arg eq "rollback-soft" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("rollback") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("rollback") );
+            rollback_env($custom_jname,$snapshot_version,"soft");
+            last;
+
+        # check env
+        } elsif ( $arg eq "check-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("check") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("check") );
+            check_env($custom_jname,$snapshot_version,"all");
+            last;
+
+        # check system env
+        } elsif ( $arg eq "check-system-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("check") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("check") );
+            check_env($custom_jname,$snapshot_version,"system");
+            last;
+
+        # check soft env
+        } elsif ( $arg eq "check-soft-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("check") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify new snapshot version.\n\n" and syntax("check") );
+            check_env($custom_jname,$snapshot_version,"soft");
+            last;
+
+        # delete env
+        } elsif ( $arg eq "delete-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("delete") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("delete") );
+            delete_env($custom_jname,$snapshot_version,"all");
+            last;
+
+
+        # delete system env
+        } elsif ( $arg eq "delete-system-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("delete") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("delete") );
+            delete_env($custom_jname,$snapshot_version,"system");
+            last;
+
+        # delete soft env
+        } elsif ( $arg eq "delete-soft-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("delete") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("delete") );
+            delete_env($custom_jname,$snapshot_version,"soft");
+            last;
+
+        # clear env
+        } elsif ( $arg eq "clear-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("clear") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("clear") );
+            clear_env($custom_jname,$snapshot_version,"all");
+            last;
+
+        # clear system env
+        } elsif ( $arg eq "clear-system-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("clear") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("clear") );
+            clear_env($custom_jname,$snapshot_version,"system");
+            last;
+
+        # clear soft env
+        } elsif ( $arg eq "clear-soft-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("clear") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("clear") );
+            clear_env($custom_jname,$snapshot_version,"soft");
+            last;
+
+        # set env
+        } elsif ( $arg eq "set-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("set") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("set") );
+            $params = shift @ARGV || ( warn "ERROR: Specify params.\n\n" and syntax("set") );
+            set_env($custom_jname,$snapshot_version,"all",$params);
+            last;
+
+        # set system env
+        } elsif ( $arg eq "set-system-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("set") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("set") );
+            $params = shift @ARGV || ( warn "ERROR: Specify params.\n\n" and syntax("set") );
+            set_env($custom_jname,$snapshot_version,"system",$params);
+            last;
+
+        # set soft env
+        } elsif ( $arg eq "set-soft-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("set") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("set") );
+            $params = shift @ARGV || ( warn "ERROR: Specify params.\n\n" and syntax() );
+            set_env($custom_jname,$snapshot_version,"soft",$params);
+            last;
+
+        # modify env
+        } elsif ( $arg eq "modify-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("modify") );
+            $mode = shift @ARGV || ( warn "ERROR: Specify new mode (production|update).\n\n" and syntax("modify") );
+            if ( defined $mode && $mode !~ /(production|update)/ ) {
+                warn "ERROR: Wrong syntax.\n\n";
+                syntax("modify");
+            }
+            modify_env($custom_jname,$mode,"all");
+            last;
+
+        # modify system env
+        } elsif ( $arg eq "modify-system-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("modify") );
+            $mode = shift @ARGV || ( warn "ERROR: Specify new mode (production|update).\n\n" and syntax("modify") );
+            if ( defined $mode && $mode !~ /(production|update)/ ) {
+                warn "ERROR: Wrong syntax.\n\n";
+                syntax("modify");
+            }
+            modify_env($custom_jname,$mode,"system");
+            last;
+
+        # modify soft env
+        } elsif ( $arg eq "modify-soft-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("modify") );
+            $mode = shift @ARGV || ( warn "ERROR: Specify new mode (production|update).\n\n" and syntax("modify") );
+            if ( defined $mode && $mode !~ /(production|update)/ ) {
+                warn "ERROR: Wrong syntax.\n\n";
+                syntax("modify");
+            }
+            modify_env($custom_jname,$mode,"soft");
+            last;
+
+        # mount env
+        } elsif ( $arg eq "mount-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("mount") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("mount") );
+            mount_env($custom_jname,$snapshot_version,"all");
+            last;
+
+        # mount system env
+        } elsif ( $arg eq "mount-system-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("mount") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("mount") );
+            mount_env($custom_jname,$snapshot_version,"system");
+            last;
+
+        # mount soft env
+        } elsif ( $arg eq "mount-soft-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("mount") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("mount") );
+            mount_env($custom_jname,$snapshot_version,"soft");
+            last;
+
+        # umount env
+        } elsif ( $arg eq "umount-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("mount") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("mount") );
+            umount_env($custom_jname,$snapshot_version,"all");
+            last;
+
+        # copy env
+        } elsif ( $arg eq "copy-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify source jail name.\n\n" and syntax("copy") );
+            $dst_custom_jname = shift @ARGV || ( warn "ERROR: Specify destination jail name.\n\n" and syntax("copy") );
+            copy_env($custom_jname,$dst_custom_jname,"all");
+            last;
+
+        # copy system env
+        } elsif ( $arg eq "copy-system-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify source jail name.\n\n" and syntax("copy") );
+            $dst_custom_jname = shift @ARGV || ( warn "ERROR: Specify destination jail name.\n\n" and syntax("copy") );
+            copy_env($custom_jname,$dst_custom_jname,"system");
+            last;
+
+        # copy soft env
+        } elsif ( $arg eq "copy-soft-env" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify source jail name.\n\n" and syntax("copy") );
+            $dst_custom_jname = shift @ARGV || ( warn "ERROR: Specify destination jail name.\n\n" and syntax("copy") );
+            copy_env($custom_jname,$dst_custom_jname,"soft");
+            last;
+
+        # show
+        } elsif ( $arg eq "show" ) {
+
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify 'base' or 'master' or custom jail name.\n\n" and syntax("show") );
+            $params = shift @ARGV;
+            if ( defined $params && $params !~ /(brief|detail|status|versions|ver)/ ) {
+
+                $snapshot_version = $params;
+                $params = shift @ARGV;
+
+                    if ( defined $params && $params !~ /(brief|detail|status|versions|ver)/ ) {    
+                        warn "ERROR: Wrong syntax.\n\n";
+                        syntax("show");
+                    }
+
+            } else {
+
+                $snapshot_version = undef;
+
+            }
+
+            show_env($custom_jname,$snapshot_version,$params);
+            last;
+
+	# create snapshot jail
+        } elsif ( $arg eq "create-snapshot" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify jail name to make recursive snapshot.\n\n" and syntax("create-snapshot") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("create-snapshot") );
+            create_snapshot($custom_jname,$snapshot_version);
+            last;
+
+        # delete jail snapshot
+        } elsif ( $arg eq "delete-snapshot" ) {
+            $custom_jname = shift @ARGV || ( warn "ERROR: Specify root filesystem to recursion destroy snapshot.\n\n" and syntax("delete-snapshot") );
+            $snapshot_version = shift @ARGV || ( warn "ERROR: Specify snapshot version.\n\n" and syntax("delete-snapshot") );
+            delete_snapshot($custom_jname,$snapshot_version);
+            last;
+        }
+
+        print "Syntax error.\n"; 
+        syntax("help");
+
+    }
+
+
+
+
+}
+
+sub syntax {
+
+    my ($func) = @_;
+
+    print ">>zLUe> Syntax:\n\n";
+    print "\tzlue [showonly|-s] [verbose|-v] [-d (1-3)] function options\n\n";
+
+    if ( $func eq "update" || $func eq "help" ) {
+
+        print ">>zLUe> to update 'current' version of environment to <new_version>:\n\n";
+        print "\tzlue update (base|master|<jail_name>) <new_version>\n\n";
+        print "\tzlue update-system (base|master|<jail_name>) <new_version>\n\n";
+        print "\tzlue update-soft (base|master|<jail_name>) <new_version>\n\n";
+
+    }
+
+    if ( $func eq "rollback" || $func eq "help" ) {
+
+        print ">>zLUe> to rollback environment from 'current' version to <outdate_version>:\n\n";
+        print "\tzlue rollback (base|master|<jail_name>) <outdate_version>\n\n";
+        print "\tzlue rollback-system (base|master|<jail_name>) <outdate_version>\n\n";
+        print "\tzlue rollback-soft (base|master|<jail_name>) <outdate_version>\n\n";
+
+    }
+
+    if ( $func eq "create" || $func eq "help" ) {
+
+        print ">>zLUe> to create <new_version> of environment ('update' version):\n\n";
+        print "\tzlue create-env (base|master|<jail_name>) <new_version>\n\n";
+        print "\tzlue create-system-env (base|master|<jail_name>) <new_version>\n\n";
+        print "\tzlue create-soft-env (base|master|<jail_name>) <new_version>\n\n";
+
+    }
+
+    if ( $func eq "init" || $func eq "help" ) {
+
+        print ">>zLUe> to initialize <new_version> of environment ('update' version):\n\n";
+        print "\tzlue init-env (base|master|<jail_name>) <new_version>\n\n";
+        print "\tzlue init-system-env (base|master|<jail_name>) <new_version>\n\n";
+        print "\tzlue init-soft-env (base|master|<jail_name>) <new_version>\n\n";
+
+    }
+
+    if ( $func eq "check" || $func eq "help" ) {
+
+        print ">>zLUe> to check <new_version> of environment ('update' version):\n\n";
+        print "\tzlue check-env (base|master|<jail_name>) <new_version>\n\n";
+        print "\tzlue check-system-env (base|master|<jail_name>) <new_version>\n\n";
+        print "\tzlue check-soft-env (base|master|<jail_name>) <new_version>\n\n";
+
+    }
+
+    if ( $func eq "delete" || $func eq "help" ) {
+
+        print ">>zLUe> to delete <specified_version> of environment (not current):\n\n";
+        print "\tzlue delete-env (base|master|<jail_name>) <specified_version>\n\n";
+        print "\tzlue delete-system-env (base|master|<jail_name>) <specified_version>\n\n";
+        print "\tzlue delete-soft-env (base|master|<jail_name>) <specified_version>\n\n";
+
+    }
+
+    if ( $func eq "clear" || $func eq "help" ) {
+
+        print ">>zLUe> to clear (inherit) <specified_version> of environment:\n\n";
+        print "\tzlue clear-env (base|master|<jail_name>) <specified_version>\n\n";
+        print "\tzlue clear-system-env (base|master|<jail_name>) <specified_version>\n\n";
+        print "\tzlue clear-soft-env (base|master|<jail_name>) <snapshot_version>\n\n";
+
+        print ">>zLUe> to clear (inherit) <current> of all type of environment:\n\n";
+        print "\tzlue clear-env (base|master|<jail_name>) current\n\n";
+    }
+
+    if ( $func eq "set" || $func eq "help" ) {
+
+        print ">>zLUe> to set a zfs property for <specified_version> of environment:\n\n";
+        print "\tzlue set-env (base|master|<jail_name>) <specified_version> property=value\n\n";
+        print "\tzlue set-system-env (base|master|<jail_name>) <specified_version> property=value\n\n";
+        print "\tzlue set-soft-env (base|master|<jail_name>) <specified_version> property=value\n\n";
+
+    }
+
+    if ( $func eq "modify" || $func eq "help" ) {
+
+        print ">>zLUe> to modify (switch over) a 'lue:mode' property for 'current' version of environment:\n\n";
+        print "\tzlue modify-env <jail_name> mode\n";
+        print "\tzlue modify-env <jail_name> (production|update)\n\n";
+        print "\tzlue modify-system-env <jail_name> (production|update)\n\n";
+        print "\tzlue modify-soft-env <jail_name> (production|update)\n\n";
+
+    }
+
+    if ( $func eq "mount" || $func eq "help" ) {
+
+        print ">>zLUe> to mount <specified_version> of environment:\n\n";
+        print "\tzlue mount-env (base|master|<jail_name>) <specified_version>\n\n";
+        print "\tzlue mount-system-env (base|master|<jail_name>) <specified_version>\n\n";
+        print "\tzlue mount-soft-env (base|master|<jail_name>) <specified_version>\n\n";
+
+    }
+
+    if ( $func eq "umount" || $func eq "help" ) {
+
+        print ">>zLUe> to umount <specified_version> of environment:\n\n";
+        print "\tzlue umount-env (base|master|<jail_name>) <specified_version>\n\n";
+
+    }
+
+    if ( $func eq "copy" || $func eq "help" ) {
+
+        print ">>zLUe> to copy an environment of <src_jail_name> to <dst_jail_name>:\n\n";
+        print "\tzlue copy-env <src_jail_name> <dst_jail_name>\n\n";
+        print "\tzlue copy-system-env <src_jail_name> <dst_jail_name>\n\n";
+        print "\tzlue copy-soft-env <src_jail_name> <dst_jail_name>\n\n";
+
+    }
+
+    if ( $func eq "show" || $func eq "help" ) {
+        print ">>zLUe> to show a LUE property of 'current' version of environment:\n\n";
+        print "\tzlue show (base|master|<jail_name>) [brief|detail|status|versions]\n\n";
+    }
+
+    if ( $func eq "create-snapshot" || $func eq "help" ) {
+        print ">>zLUe> to create snapshot of 'current' version of environment with <snapshot_version>:\n\n";
+        print "\tzlue create-snapshot <jail_name> <snapshot_version>\n\n";
+    }
+
+    if ( $func eq "delete-snapshot" || $func eq "help" ) {
+        print ">>zLUe> to delete snapshots of <snapshot_version> of environment:\n\n";
+        print "\tzlue delete-snapshot <filesystem> <snapshot_version>\n\n";
+    }
+
+#    print "\t\t<xxxx_date_xxxx> - format YYYYMMDD\n\n";
+    print "\n";
+    exit;
+
+}
+
+sub debug {
+
+    my ($level,$msg) = @_;
+
+    if ( $level <= $Val::debug ) {
+        print "DEBUG: $msg\n";
+    }
+
+}
+
+sub verbose {
+
+    my ($msg) = @_;
+
+    if ( defined $Val::verbose ) {
+        print "$msg\n";
+    }
+
+}
+
+sub check_yesno {
+
+    my ($question, $allowed_answers, $default_answer, $input_command) = @_;
+
+    my ($inputed_answer, $allowed_answer, $i, $status_hit);
+    my @allowed_answer_list;
+    my %allowed_answer_desc = (
+                     "Y" => "yes",
+                     "N" => "exit",
+                     "S" => "skip",
+                     "A" => "alter command",
+                     "M" => "manual command",
+       );
+
+
+    if ( defined $input_command ) { 
+        print "\n>>zLUe> Input command: $input_command\n";
+    } else {
+        print "\n";
+    }
+
+    print ">>zLUe> $question \(";
+    @allowed_answer_list = split(/\//,$allowed_answers);
+
+    $i = 0;
+    foreach $allowed_answer ( @allowed_answer_list ) {
+
+        print "\/" if ( $i++ != 0 );
+        print "$allowed_answer";
+        if ( exists $allowed_answer_desc{$allowed_answer} ) {
+            print "[$allowed_answer_desc{$allowed_answer}]";
+        }
+
+    }
+
+    print "\) ";
+    print "[$default_answer]" if ( defined $default_answer );
+    print ": ";
+
+    $| = 1;
+    while ( $inputed_answer = <STDIN> ) {
+
+        $status_hit = 0;
+        chomp $inputed_answer;
+
+        if ( $inputed_answer eq "" ) {
+            $inputed_answer = $default_answer;
+        }
+
+        foreach $allowed_answer ( @allowed_answer_list ) {
+
+            if ( $allowed_answer eq $inputed_answer ) {
+                $status_hit = 1;
+                last;
+            }
+
+        }
+
+        if ( $status_hit == 1 ) {
+
+            if ( $inputed_answer eq "Y" ) {
+
+                print "Yes, continue...\n";
+                if ( defined $input_command ) {
+                    return $input_command; 
+
+                } else {
+                    return "Y";
+
+                }
+
+            } elsif ( $inputed_answer eq "N" ) {
+
+                print "No, exit...\n";
+                exit;
+
+            } elsif ( $inputed_answer eq "S" ) {
+
+                print "Skip, go to next step...\n";
+                return undef;
+
+            } elsif ( $inputed_answer eq "A" || $inputed_answer eq "M" ) {
+
+                #print "\n>>zLUe> Input alter command: ";
+                #$inputed_answer = <STDIN>;
+                $inputed_answer = "
+if [ -f /root/.cshrc ]; then cp -p /root/.cshrc /root/.cshrc.bu; fi && \
+echo \"set prompt = \\\"\\\\\
+%B\\\[$allowed_answer_desc{$inputed_answer} mode\\\]%b\\\\\
+\'exit\' to continue update.\\\\\
+%B\\`hostname -s\\`%b>%C2\\\[%P\\\]%B>>zLUe> %b\\\"\" >> /root/.cshrc && \
+tcsh && \
+if [ -f /root/.cshrc.bu ]; then mv /root/.cshrc.bu /root/.cshrc; fi
+                ";
+                $Val::noshowcmd = 1;
+                return $inputed_answer;
+
+
+            } elsif ( $inputed_answer =~ /\d/ ) {
+
+                return $inputed_answer;
+
+            } else {
+
+                print "Input (" . join("/",@allowed_answer_list) . "):";
+
+            }
+
+        } else {
+
+            print "Input (" . join("/",@allowed_answer_list) . "):";
+
+        }
+
+        $default_answer = undef;
+
+   }
+
+}
+
+sub exec_sh {
+
+    my ($interactive, @cmd) = @_;
+
+    my @cmd_;
+    my $length = 70;
+    my (@strings, $str, $sub_str, $fstr, $options);
+    my $exit_status = 0;
+
+    foreach $str (@cmd) {
+
+        if ( defined $Val::verbose && !defined $Val::noshowcmd ) {
+
+            # preformated output
+            $fstr = "=>";
+            @strings = split(/\s+/,$str);
+            foreach $sub_str ( @strings ) {
+
+                if ( $sub_str =~ /^-/ ) {
+
+                    $options = "$options $sub_str";
+                    next;
+
+                } else {
+
+                    if ( defined $options ) {
+                        $sub_str = "$options $sub_str";
+                    } else {
+                        $sub_str = "$sub_str";
+                    }
+                    $options = undef;
+
+                }
+
+                if ( length("$fstr $sub_str") > $length ) {
+
+                    print "\t$fstr\n";
+                    $fstr = " $sub_str";
+
+                } else {
+
+                    $fstr = "$fstr $sub_str";
+
+                }
+
+            }
+            print "\t$fstr\n";
+
+        }
+
+        if ( !defined $Val::showonly ) {
+            @cmd_ = split(/\s+/,$str);
+            if ( $interactive eq "yes" ) {
+                system("@cmd_") && ( warn "Can't exec @cmd_ :$!" and check_yesno("Continue","Y/N","N") );
+            } else {
+                system("@cmd_") && ( warn "Can't exec @cmd_ :$!" and $exit_status++ );
+            }
+        }
+
+    } 
+
+    $Val::noshowcmd = undef;
+
+    return $exit_status;
+
+}
+
+# to exec shell scripts in chroot environment
+# $chroot - chroot directory
+# $dir - temporal directory for scripts
+# @cmd - list of shell command
+sub exec_chroot_sh {
+
+    my ($chroot, $dir, @cmd) = @_;
+    my ($str, $cmd, @cmd_);
+    my $exit_status = 0;
+
+    if ( !defined $Val::showonly ) {
+
+        open (SH_SCRIPT,">$chroot/$dir/zlue_src_update.sh") || die "Can't open $chroot/$dir/zlue_src_update.sh:$!";
+        print SH_SCRIPT "#!/bin/sh\n";
+
+        foreach $str (@cmd) {
+            print "\t$str\n" if ( !defined $Val::noshowcmd );
+            print SH_SCRIPT "$str\n";
+        }
+        close SH_SCRIPT;
+
+        @cmd_=("$Util::chmod","700","$chroot/$dir/zlue_src_update.sh");
+        system("@cmd_",) && ( warn "Can't exec @cmd_ :$!" and $exit_status++ and check_yesno("Continue","Y/N","N") );
+
+        @cmd_=("$Util::chroot",$chroot,"/$dir/zlue_src_update.sh");
+        system("@cmd_",) && ( warn "Can't exec @cmd_ :$!" and $exit_status++ and check_yesno("Continue","Y/N","N") );
+
+        @cmd_=("$Util::rm","$chroot/$dir/zlue_src_update.sh");
+        system("@cmd_",) && ( warn "Can't exec @cmd_ :$!" and $exit_status++ and check_yesno("Continue","Y/N","N") );
+
+    } else {
+
+        foreach $str (@cmd) {
+            $str = "chroot $chroot $str";
+            print "\t$str\n" if ( !defined $Val::noshowcmd );
+        }
+
+    }
+
+    $Val::noshowcmd = undef;
+
+    return $exit_status;
+
+}
+
+
+
+
+# create master/jname jail
+# $jname - jail name
+#
+sub create_jail {
+
+    my($jname, $scheme, $snapshot_version) = @_;
+    my $new_jfs = "$Conf::jbase_fs/$jname";
+    my $new_jmp = "/$Conf::jbase_fs_mp/$jname";
+    my (@cmd);
+
+    my ($new_fs, $new_mp, $scheme_mp, %zfs_properties);
+    my ($master_fs, $master_mp);
+
+    check_yesno("Start to create LUEnvironment of '$jname' jailed system firstly.","Y/N","Y");
+
+    print "\n=> Create filesystems for $new_jfs...\n";
+    do_create_fs($new_jfs,undef,{"mountpoint" => "none", "lue:scheme" => "$scheme", "lue:jname" => "$jname"});
+
+    foreach $scheme_mp ( sort {$a cmp $b}  keys %{$Conf::fs_scheme{$scheme}} ) {
+
+        if ( $Conf::fs_scheme{$scheme}{$scheme_mp}{'lue'} eq "yes" ) {
+
+            $new_fs = "$new_jfs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}.$snapshot_version";
+            $master_fs = "$Conf::master_jfs/$Conf::fs_scheme{'master'}{$scheme_mp}{'fsn'}.$snapshot_version" if ( $jname ne "master" );
+
+        } else {
+
+            $new_fs = "$new_jfs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}";
+            $master_fs = "$Conf::master_jfs/$Conf::fs_scheme{'master'}{$scheme_mp}{'fsn'}" if ( $jname ne "master" );
+
+        }
+
+        if ( $scheme_mp ne "/" ) {
+            $new_mp = "$new_jmp$scheme_mp";
+        } else {
+            $new_mp = "$new_jmp";
+        }
+
+        $master_mp = "/$Conf::jbase_fs_mp/master$scheme_mp";
+
+        %zfs_properties = (
+                           "mountpoint" => "$new_mp",
+                           "lue:type" => "$Conf::fs_scheme{$scheme}{$scheme_mp}{'type'}",
+                           "lue:liveupdate" => "$Conf::fs_scheme{$scheme}{$scheme_mp}{'lue'}",
+                           "lue:version" => "$snapshot_version",
+                           "lue:parent" => "firstly",
+                           "lue:status" => "current",
+                           "lue:mountpoint" => "$scheme_mp",
+                           "lue:scheme" => "$scheme",
+                           "lue:jname" => "$jname",
+                           "lue:candel" => "yes"
+        );
+
+
+        print "\n=> create '$new_fs'\n";
+
+        if ( $jname ne "master" ) {
+
+            if ( "$Conf::fs_scheme{$scheme}{$scheme_mp}{'clone_only'}" eq "yes" ) {
+
+                do_clone_fs("$master_fs\@$snapshot_version",$new_fs,undef,{%zfs_properties,"lue:clone_only" => "yes"});
+
+            } else {
+
+                if ( defined get_sth_df("fs4mp","$master_mp",undef) ) {
+
+                    print "\n=> '$scheme_mp' exists\n";
+                    do_copy_fs("$master_fs\@$snapshot_version",$new_fs);
+                    zfs_sets($new_fs,\%zfs_properties,$Val::zfs_ps);
+
+                } else {
+
+                    print "\n=> '$scheme_mp' ($master_mp) mountpoint does not exist\n";
+                    print "\tMoving '$master_mp' to '$new_mp'.\n\tIt will take some time, please wait...\n";
+
+                    do_rm_dir($new_mp);
+                    do_create_fs($new_fs,undef,\%zfs_properties);
+
+                    do_copy_fs_by_tar($scheme,"/$Conf::jbase_fs_mp/master",$scheme_mp,$new_jmp);
+
+
+                }
+
+            }
+
+        } else {
+
+            do_create_fs($new_fs,undef,\%zfs_properties);
+
+        }
+
+        print "\n\t=> set zfs properties for update mode\n";
+        zfs_set($new_fs,"lue:mode","update",$Val::zfs_ps);
+        zfs_sets($new_fs,$Conf::fs_scheme{$scheme}{$scheme_mp}{'zps_um'},$Val::zfs_ps);
+
+    } 
+
+    if ( $jname eq "master" ) {
+
+        install_system_to_master_jail($new_jmp);
+
+    }
+
+    print "\n>>zLUe> Creating '$jname' jail has passed successfully!\n";
+    start_jail_lue($jname,"first",$new_jfs) &&
+    print "\n>>zLUe> Running '$jname' jail has passed successfully!\n";
+    sleep 5;
+
+    print "\n=> set zfs properties for production mode\n";
+    foreach $scheme_mp ( sort {$a cmp $b}  keys %{$Conf::fs_scheme{$scheme}} ) {
+
+        if ( $Conf::fs_scheme{$scheme}{$scheme_mp}{'lue'} eq "yes" ) {
+            $new_fs = "$new_jfs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}.$snapshot_version";
+        } else {
+            $new_fs = "$new_jfs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}";
+        }
+        print "\n=> set '$new_fs'\n";
+        zfs_set($new_fs,"lue:mode","production",$Val::zfs_ps);
+        zfs_sets($new_fs,$Conf::fs_scheme{$scheme}{$scheme_mp}{'zps_pm'},$Val::zfs_ps);
+
+        if ( $jname eq "master" ) {
+
+            print "=> create 'install' snapshot for custom jails\n";
+            do_snapshot($new_fs,"$snapshot_version",undef,("lue:reason=install","lue:version=$snapshot_version","lue:parent=firstly"));
+
+        }
+
+    }
+
+    print "\n>>zLUe> That's all!\n";
+    exit;
+
+}
+
+sub update_env {
+
+    my($jname, $snapshot_version, $update_type) = @_;
+    my $upd_jfs = "$Conf::jbase_fs/$jname";
+    my ($upd_fs, $scheme, $scheme_mp);
+    my (@cmd);
+    my ($chroot_mp, $root_mp, $lue_version);
+    my $answer;
+
+
+    # UPDATE BASE SYSTEM
+    if ( $jname eq "base" ) {
+
+        check_yesno("Start to live update 'base' system","Y/N","Y");
+
+        # create lue
+        ($lue_version,$chroot_mp) = create_env($jname,$snapshot_version,$update_type);
+
+        # if creating of new LUE is skipped, then check the LUE and define necessary values
+        if ( ! defined $lue_version || ! defined $chroot_mp ) {
+
+            print "\n>>zLUe> Creating of new LUE has skipped.\n";
+            ($lue_version,$chroot_mp) = check_env($jname,$snapshot_version,$update_type);
+
+        }
+
+
+        # if lue is created firstly, then does not update base system, i.e. create lue only.
+        # no firstly, usual case
+        if ( $lue_version ne "nolue" ) {
+
+            if ( check_yesno("Start to upgrade software of 'base' system","Y/N/S","Y") ) {
+
+                #if update system/all
+                if ( $update_type eq "system" || $update_type eq "all" ) {
+
+                    if ( check_yesno("New 'SYSTEM' LUEnvironment is ready, start upgrade 'base' system","Y/N/S","Y") ) {
+
+                        print "\n>>zLUe> You can upgrade:\n";
+                        print "\t\t- '1' - from source (update source, compile and install):\n";
+                        print "\t\t        you should configure svn/cvsup, /etc/make.conf before\n\n";
+                        print "\t\t- '2' - with 'freebsd-update':\n";
+                        print "\t\t        you should configure /etc/freebsd-update.conf before\n\n";
+                        print "\t\t- 'M' - 'by hand':\n";
+                        print "\t\t        you will be switched over to another terminal in chroot environment\n";
+                        print "\t\t        and then you can upgrade software by hand.\n";
+
+                        if ( $answer = check_yesno("","1/2/M/N/S",undef) ) {
+
+                            # Upgrade by src compiling
+                            if ( $answer == 1 ) {
+                                upgrade_by_src_compiling($chroot_mp,$update_type);
+
+                            # Upgrade by binary fetching
+                            } elsif ( $answer == 2 ) {
+                                upgrade_by_freebsd_update($chroot_mp);
+
+                            # Manually
+                            } else {
+                                exec_chroot_sh($chroot_mp,"tmp",$answer);
+                                #check_yesno("Type 'Y' and press Enter after upgrade to init LUEnvironment.","Y",undef);
+
+                            }
+
+                        }
+
+                    }
+
+                }
+
+                # update boot code
+                if ( $update_type eq "system" || $update_type eq "all" ) {
+                    print "\n>>zLUe> If there is a new version of ZFS,\n";
+                    print "        then won't forget to update bootcode before reboot!!!\n";
+                    print "        Please refer to the 'ZFS notes' section of /usr/src/UPDATING\n";
+                    print "        Ex: 'gpart bootcode -b /boot/pmbr -p /boot/gptzfsboot -i 1 ada0'\n";
+                    print "        Notice: Your command depends on selected partitioning scheme.\n";
+                    if ( $answer = check_yesno("Do you need update bootcode ?","M/N/S","M") ) {
+                        exec_chroot_sh($chroot_mp,"tmp",$answer);
+                    }
+                }
+
+                #if update soft/all
+                if ( $update_type eq "soft" || $update_type eq "all" ) {
+
+                    if ( $answer = check_yesno("New 'SOFT' LUEnvironment is ready, start upgrade 'base' system","M/N/S","M") ) {
+                        exec_chroot_sh($chroot_mp,"tmp",$answer);
+                    }
+                    #print "\n>>zLUe> New 'SOFT' LUEnvironment is ready, to start upgrade 'base' system.\n";
+                    #print ">>zLUe> You can move into chroot environment ( chroot $chroot_mp ) and update software.\n";
+                    #check_yesno("Type 'Y' and press Enter after upgrade to init LUEnvironment.","Y",undef);
+
+                }
+
+            }
+
+        # firstly
+        } else {
+
+            print "\n>>zLUe> You must reboot after 'init' without some updates,\n       because of the first LUE.\n";
+
+        }
+
+
+        # init new LUE
+        #init_env($jname,$snapshot_version,$update_type);
+        init_env($jname,$snapshot_version,"all");
+
+
+        print "\n>>zLUe> Updating 'base' system has passed successfully!\n";
+        check_yesno("Start to Shutdown now","Y/N","N");
+        exec_sh("yes","/sbin/shutdown -r now");
+
+
+    # UPDATE JAIL
+    } else {
+
+        check_yesno("Start to live update '$jname' jailed system","Y/N","Y");
+
+#        if ( $jname ne "master" ) {
+#
+#            check_yesno("Do you have recursive snapshot $Conf::master_jfs\@$snapshot_version (zfs snapshot -r $Conf::master_jfs\@$snapshot_version)","Y/N","Y");
+#            does_snapshot_exist("$Conf::master_jfs\@$snapshot_version");
+#
+#        }
+
+
+        # create new LUE
+        ($lue_version,$chroot_mp) = create_env($jname,$snapshot_version,$update_type);
+
+        # if creating of new LUE is skipped, then check the LUE and define necessary values
+        if ( ! defined $lue_version || ! defined $chroot_mp ) {
+
+            print "\n>>zLUe> Creating of new LUE has skipped.\n";
+            ($lue_version,$chroot_mp) = check_env($jname,$snapshot_version,$update_type);
+
+        }
+
+
+        # if lue is created firstly, then does not update system, i.e. create lue only.
+        # no firstly
+        if ( $lue_version ne "nolue" ) {
+
+            if ( check_yesno("Start to upgrade software of '$jname' jailed system","Y/N/S","Y") ) {
+
+                if ( $update_type eq "system" || $update_type eq "all" ) {
+
+                    if ( $jname eq "master" ) {
+
+                        upgrade_system_master_jail($chroot_mp);
+
+                    } else {
+
+                        if ( check_yesno("New 'SYSTEM' LUEnvironment is ready, start upgrade '$jname' jailed system","Y/N/S","Y") ) {
+
+                            print "\n=> Updating 'etc' by mergemaster...\n";
+                            exec_sh("yes","/usr/sbin/mergemaster -t $chroot_mp/var/tmp/temproot -D $chroot_mp");
+
+                        }
+
+                    }
+
+                }
+
+                if ( $update_type eq "soft" || $update_type eq "all" ) {
+
+                    # mount ports/src dir from 'base' system
+                    init_ports_env($jname,"update",$chroot_mp);
+
+                    if ( $answer = check_yesno("New 'SOFT' LUEnvironment is ready, start upgrade '$jname' system","M/N/S","M") ) {
+                        exec_chroot_sh($chroot_mp,"tmp",$answer);
+                    }
+                    #print "\n>>zLUe> New 'SOFT' LUEnvironment is ready, to start upgrade '$jname' jailed system.\n";
+                    #print ">>zLUe> You can move into chroot environment ( chroot $chroot_mp ) and update software.\n";
+                    #check_yesno("Press Enter after upgrade to init LUEnvironment.","Y",undef);
+
+                }
+
+            }
+
+        }
+
+        #init_env($jname,$snapshot_version,$update_type);
+        init_env($jname,$snapshot_version,"all");
+
+    }
+
+}
+
+sub create_env {
+
+    my ($jname, $snapshot_version, $create_type) = @_;
+    my ($type, $lue_version, $chroot_mp);
+
+    if ( $create_type eq "all" ) {
+        $type = "soft";
+    } else {
+        $type = $create_type;
+    }
+   
+
+    if ( check_yesno("Start to create new LUEnvironment ('$snapshot_version' version, '$create_type' type) of the '$jname' system","Y/N/S","Y") ) {
+
+        if ( $jname eq "base" ) {
+
+            ($lue_version,$chroot_mp) = create_new_lue($Conf::zpool_base,$jname,$type,$snapshot_version);
+
+        } else {
+
+
+            ($lue_version,$chroot_mp) = create_new_lue($Conf::jbase_fs,$jname,$type,$snapshot_version);
+
+        }
+
+    }
+
+    return ($lue_version,$chroot_mp);
+
+}
+
+sub init_env {
+
+    my ($jname, $snapshot_version, $init_type) = @_;
+    my ($init_status);
+
+    if ( check_yesno("Start to initialize new LUEnvironment ('$snapshot_version' version, '$init_type' type) of the '$jname' system","Y/N/S","Y") ) {
+
+        if ( $jname eq "base" ) {
+
+            $init_status = init_new_lue($Conf::zpool_base,$jname,$init_type,$snapshot_version,"init");
+
+        } else {
+
+            $init_status = init_new_lue($Conf::jbase_fs,$jname,$init_type,$snapshot_version,"init");
+
+        }
+
+    }
+
+    if ( $init_status == 0 ) {
+        print "\n>>zLUe> Initializing of '$jname' system has passed successfully!\n";
+
+    } else {
+        die "\n>>zLUe> Initializing of '$jname' system has failed!\n";
+
+    }
+
+}
+
+#sub init_env_force {
+#
+#    my ($jname, $snapshot_version, $init_type) = @_;
+#    my ($type, $init_status);
+#
+#    if ( $init_type eq "all" ) {
+#        $type = "soft";
+#    } else {
+#        $type = $init_type;
+#    }
+#
+#    if ( check_yesno("Start to initialize new LUEnvironment ('$snapshot_version' version, '$init_type' type) of the '$jname' system","Y/N/S","Y") ) {
+#
+#        if ( $jname eq "base" ) {
+#
+#            $init_status = init_new_lue_force($Conf::zpool_base,$jname,$type,$snapshot_version,"init");
+#
+#        } else {
+#
+#            $init_status = init_new_lue_force($Conf::jbase_fs,$jname,$type,$snapshot_version,"init");
+#
+#        }
+#
+#    }
+#
+#    if ( $init_status == 0 ) {
+#
+#        print "\n>>zLUe> Initializing of '$jname' system has passed successfully!\n";
+#
+#    }
+#
+#}
+
+sub rollback_env {
+
+    my ($jname, $snapshot_version, $rollback_type) = @_;
+    my ($scheme, $init_status);
+
+    check_yesno("Start to rollback LUE ('$rollback_type' type) of the '$jname' system to '$snapshot_version' version","Y/N","Y");
+
+    if ( $jname eq "base" ) {
+
+        $init_status = init_new_lue($Conf::zpool_base,$jname,$rollback_type,$snapshot_version,"rollback");
+
+    } else {
+
+        $init_status = init_new_lue($Conf::jbase_fs,$jname,$rollback_type,$snapshot_version,"rollback");
+
+    }
+
+    if ( $init_status == 0 ) {
+
+        print "\n>>zLUe> Rollback of '$jname' system to '$snapshot_version' version has passed successfully!\n";
+        if ( $jname eq "base" ) {
+            check_yesno("Start to shutdown now","Y/N","N");
+            exec_sh("yes","/sbin/shutdown -r now");
+        }
+
+    }
+
+}
+
+sub check_env {
+
+    my ($jname, $snapshot_version, $check_type) = @_;
+    my ($lue_version, $chroot_mp);
+
+    print "\n>>zLUe> Start to check new LUEnvironment ('$snapshot_version' version, '$check_type' type) of the '$jname' system\n";
+
+    if ( $jname eq "base" ) {
+
+        ($lue_version,$chroot_mp) = init_new_lue($Conf::zpool_base,$jname,$check_type,$snapshot_version,"check");
+
+    } else {
+
+        ($lue_version,$chroot_mp) = init_new_lue($Conf::jbase_fs,$jname,$check_type,$snapshot_version,"check");
+
+    }
+
+    if ( defined $lue_version && defined $chroot_mp ) {
+
+        print "\n>>zLUe> Checking of '$jname' system has passed successfully!\n";
+        return ($lue_version,$chroot_mp);
+
+    } else {
+        die "\n>>zLUe> Checking of '$jname' system has failed!\n";
+
+    }
+
+}
+
+# to delete LUE of specified version with all backup snapshots
+sub delete_env {
+
+    my ($jname, $lue_spec_version, $type) = @_;
+    my ($root_fs, $root_mp, $fs, $mp);
+    my ($lue_cur_version);
+    my ($snapshot, $origin, $clone_only);
+    my ($is_fs_mp_updateable, $has_fs_mp_snapshot, $status_del_list);
+
+    if ( ! defined $Val::showonly ) {
+
+        print "\n>>zLUe> Be careful! You can delete some important information!\n";
+        print ">>zLUe> You can see what you will delete by command 'zlue showonly delete-env $jname $lue_spec_version'\n";
+        check_yesno("Start to delete the '$lue_spec_version' version of LUE ('$type' type) of the '$jname' system","Y/N","Y");
+
+    } else {
+
+        check_yesno("Start looking at that you can delete from the '$lue_spec_version' version of LUE ('$type' type) of the '$jname' system","Y/N","Y");
+
+    }
+
+    if ( $jname eq "base" ) {
+        $root_fs = $Conf::zpool_base;
+        $root_mp = "/";
+
+    } else {
+        $root_fs = "$Conf::jbase_fs/$jname";
+        $root_mp = "/$Conf::jbase_fs_mp/$jname";
+
+    }
+
+    # check being ready current lue
+    $lue_cur_version = define_current_version($root_mp);
+
+    if ( $lue_spec_version eq $lue_cur_version ) {
+        die "\n>>zLUe> Warning: It is impossible to delete current version of LUE.\n";
+    }
+
+    my %zfs_properties;
+
+    if ( $type ne "all" ) {
+       %zfs_properties = ("lue:type"=>"$type");
+    }
+
+    %zfs_properties = ( %zfs_properties, 
+#                        "lue:liveupdate" => "yes",
+                        "lue:jname" => "$jname",
+#                        "lue:status" => "update|outdate",
+                        "lue:candel" => "yes",
+                        "lue:version" => "$lue_spec_version");
+
+    my $fs_mp = get_list_fs_mp_with_properties($root_fs,\%zfs_properties,"fs",$Val::zfs_ps);
+    my @list_fs = keys %$fs_mp;
+    my %mp_fs = reverse %$fs_mp;
+
+    if ( scalar @list_fs > 0 ) {
+  
+        foreach $mp ( sort {$b cmp $a} keys (%mp_fs) )  {
+
+            $fs = $mp_fs{$mp};
+
+            # is fs updateable fs
+            $is_fs_mp_updateable = get_list_fs_mp_with_properties($fs,
+                                       {"lue:liveupdate" => "yes","lue:status" => "update|outdate"},"fs",$Val::zfs_ps);
+            if ( exists $$is_fs_mp_updateable{$fs} ) {
+
+                print "=> delete $fs\n";
+
+                umount_recursively($fs,"byfs") if ( zfs_get($fs,"mounted",undef) eq "yes" );
+
+                $origin = zfs_get($fs,"origin",undef);
+                $clone_only = zfs_get($fs,"lue:clone_only",$Val::zfs_ps);
+
+                exec_sh("yes","$Util::zfs destroy -r $fs");
+                exec_sh("yes","$Util::zfs destroy -r $origin") if ( $origin ne "-" && $clone_only ne "yes" );
+
+            # non-updateable
+            } else {
+
+                print "=> delete entry of the version from $fs\n";
+                $status_del_list = zfs_del_from_list($fs,"lue:version",$lue_spec_version);
+
+                $has_fs_mp_snapshot = get_list_fs_mp_with_properties($fs,
+                                      {"lue:version" => "$lue_spec_version","type" => "snapshot"},"snapshot","$Val::zfs_ps,none");
+
+                if ( $status_del_list eq "none" ) {
+
+                    print "\n>>zLUe> The '$fs' does not have any marks of 'lue:version', i.e. it is not member of any version of LUE.\n";
+                    print "\t\t- 'Y' - delete it,\n";
+                    print "\t\t- 'S' - skip and save it.\n";
+
+                    if ( check_yesno("","Y/S","S") ) {
+                        exec_sh("yes","$Util::zfs destroy -r $fs");
+                    }
+
+                }
+
+                print "\t=> delete snapshots of $fs\n";
+                foreach $snapshot ( keys %$has_fs_mp_snapshot ) {
+                    exec_sh("yes","$Util::zfs destroy -r $snapshot");
+                }
+
+            }
+
+        }
+
+    } else {
+
+        die "\n>>zLUe> Warning: The specified LUEnvironment has not been found.\n";
+
+    }
+
+}
+
+sub clear_env {
+
+    my ($jname, $lue_spec_version, $type) = @_;
+    my ($root_fs, $root_mp, $fs, $mp);
+    my (%zfs_properties, %new_zfs_properties);
+    my $lue_cur_version;
+
+    check_yesno("Start to clear the '$lue_spec_version' version of LUE ('$type' type) of the '$jname' system","Y/N","Y");
+
+    if ( $jname eq "base" ) {
+        $root_fs = $Conf::zpool_base;
+        $root_mp = "/";
+
+    } else {
+        $root_fs = "$Conf::jbase_fs/$jname";
+        $root_mp = "/$Conf::jbase_fs_mp/$jname";
+
+    }
+
+    # check being ready current lue
+    $lue_cur_version = define_current_version($root_mp);
+
+    if ( $lue_spec_version ne "current" ) {
+
+        if ( $lue_spec_version eq $lue_cur_version ) {
+            die "\n>>zLUe> Warning: It is impossible to clear current version of LUE.\n";
+        }
+
+        if ( $type ne "all" ) {
+           %zfs_properties = ("lue:type" => "$type",
+                          "lue:liveupdate" => "yes");
+        }
+
+    } else {
+
+        $lue_spec_version = $lue_cur_version;
+
+    }
+
+    
+
+    %zfs_properties = ( %zfs_properties,
+                        "lue:jname" => "$jname",
+                        "lue:version" => "$lue_spec_version");
+
+    %new_zfs_properties = ("lue:liveupdate" => "none",
+                           "lue:jname" => "none",
+                           "lue:scheme" => "none",
+                           "lue:version" => "none",
+                           "lue:parent" => "none",
+                           "lue:type" => "none",
+                           "lue:mountpoint" => "none",
+                           "lue:candel" => "none",
+                           "lue:status" => "none");
+
+    my $fs_mp = get_list_fs_mp_with_properties($root_fs,\%zfs_properties,"fs",$Val::zfs_ps);
+    my @list_fs = keys %$fs_mp;
+    my %mp_fs = reverse %$fs_mp;
+
+    if ( scalar @list_fs > 0 ) {
+
+        foreach $mp ( sort {$b cmp $a} keys (%mp_fs) )  {
+
+            $fs = $mp_fs{$mp};
+            if ( $fs eq $root_fs ) {
+                print "\n=> '$mp' ('$fs') has not been inherited as parent_fs\n";
+                next;
+            }
+
+            print "\n=> inherit $mp ($fs)\n";
+            zfs_inherits($fs,\%new_zfs_properties,$Val::zfs_ps);
+
+        }
+
+    } else {
+
+        die "\n>>zLUe> Warning: The specified LUEnvironment has not been found.\n";
+
+    }
+
+}
+
+sub set_env {
+
+    my ($jname, $lue_spec_version, $type, $params) = @_;
+    my ($root_fs, $fs, $mp);
+    my ($property, $value);
+
+    if ( $params =~ /=/ ) {
+        ($property,$value) = split(/=/,$params);
+    }
+
+    check_yesno("Start to set the LUEnvironment ('$lue_spec_version' version) of the '$jname' system","Y/N","Y");
+
+    if ( $jname eq "base" ) {
+        $root_fs = $Conf::zpool_base;
+    } else {
+        $root_fs = "$Conf::jbase_fs/$jname";
+    }
+
+    my %zfs_properties;
+
+    if ( $type ne "all" ) {
+       %zfs_properties = ("lue:type" => "$type");
+    }
+
+    %zfs_properties = ( %zfs_properties,
+                        "lue:jname" => "$jname",
+                        "lue:version" => "$lue_spec_version");
+
+    my %new_zfs_properties = ("$property" => "$value");
+
+    my $fs_mp = get_list_fs_mp_with_properties($root_fs,\%zfs_properties,"fs",$Val::zfs_ps);
+    my @list_fs = keys %$fs_mp;
+    my %mp_fs = reverse %$fs_mp;
+
+    if ( scalar @list_fs > 0 ) {
+
+        foreach $mp ( sort {$b cmp $a} keys (%mp_fs) )  {
+            print "\n=> setting $mp ($fs)\n";
+            $fs = $mp_fs{$mp};
+            zfs_sets($fs,\%new_zfs_properties,$Val::zfs_ps);
+        }
+
+    } else {
+
+        die "\n>>zLUe> Warning: The specified LUEnvironment has not been found.\n";
+
+    }
+
+}
+
+sub modify_env {
+
+    my ($jname, $mode, $type) = @_;
+    my ($root_fs, $root_mp, $fs, $mp);
+    my ($scheme, $scheme_mp, $zps, $lue_version);
+    my (%zfs_properties, $new_zfs_properties);
+    my @cmd;
+
+    check_yesno("Start to modify the LUEnvironment ('$type' type) of the '$jname' system to '$mode' mode","Y/N","Y");
+
+    if ( $mode eq "production" ) {
+        $zps = "zps_pm";
+
+    } elsif ( $mode eq "update" ) {
+        $zps = "zps_um";
+
+    }
+
+    if ( $jname eq "base" ) {
+
+        $root_fs = $Conf::zpool_base;
+        $root_mp = "/";
+
+    } else {
+
+        $root_fs = "$Conf::jbase_fs/$jname";
+        $root_mp = "/$Conf::jbase_fs_mp/$jname";
+
+    }
+
+    ($lue_version,$scheme) = check_lue_ready($root_fs,$root_mp,$jname,undef,"current");
+
+    if ( $type ne "all" ) {
+       %zfs_properties = ("lue:type" => "$type");
+    }
+
+    %zfs_properties = ( %zfs_properties,
+                        "lue:jname" => "$jname",
+                        "lue:status" => "current");
+
+
+    my $fs_mp = get_list_fs_mp_with_properties($root_fs,\%zfs_properties,"fs",$Val::zfs_ps);
+    my @list_fs = keys %$fs_mp;
+    my %mp_fs = reverse %$fs_mp;
+
+    if ( scalar @list_fs > 0 ) {
+
+        foreach $mp ( sort {$b cmp $a} keys (%mp_fs) )  {
+
+            $fs = $mp_fs{$mp};
+            if ( zfs_get($fs,"lue:clone_only",$Val::zfs_ps) ne "yes" ) {
+
+                $scheme_mp = zfs_get($fs,"lue:mountpoint",undef);
+                $new_zfs_properties = $Conf::fs_scheme{$scheme}{$scheme_mp}{$zps};
+
+                print "\n=> setting $mp ($fs)\n";
+                zfs_set($fs,"lue:mode",$mode,$Val::zfs_ps);
+                zfs_sets($fs,$new_zfs_properties,$Val::zfs_ps);
+
+            } else {
+                print "\n=> setting $mp ($fs) - clone only\n";
+            }
+
+        }
+
+        # mount/umount ports/src for updating
+        if ( $jname ne "base" && $type ne "system" ) {
+
+            init_ports_env($jname,$mode,undef);
+
+        }
+
+        print "\n>>zLUe> Switch over to '$mode' mode.\n";
+
+    } else {
+
+        die "\n>>zLUe> Warning: The specified LUEnvironment has not been found.\n";
+
+    }
+
+}
+
+sub mount_env {
+
+    my ($jname, $snapshot_version, $mount_type) = @_;
+    my ($mount_status);
+
+    if ( check_yesno("Start to mount LUEnvironment ('$snapshot_version' version, '$mount_type' type) of the '$jname' system","Y/N/S","Y") ) {
+
+        if ( $jname eq "base" ) {
+
+            $mount_status = init_new_lue($Conf::zpool_base,$jname,$mount_type,$snapshot_version,"mount");
+
+        } else {
+
+            $mount_status = init_new_lue($Conf::jbase_fs,$jname,$mount_type,$snapshot_version,"mount");
+
+        }
+
+    }
+
+    if ( $mount_status == 0 ) {
+        print "\n>>zLUe> Mounting of '$jname' system has passed successfully!\n";
+
+    } else {
+        die "\n>>zLUe> Mounting of '$jname' system has failed!\n";
+
+    }
+
+}
+
+sub umount_env {
+
+    my ($jname, $snapshot_version) = @_;
+    my ($scheme, $root_mp, $chroot_mp, $umount_status);
+
+    if ( check_yesno("Start to umount LUEnvironment ('$snapshot_version' version) of the '$jname' system","Y/N/S","Y") ) {
+
+        if ( $jname eq "base" ) {
+
+            $scheme = $jname;
+            $root_mp = "/";
+
+        } else {
+
+            if ( ! exists($Conf::fs_scheme{$jname}) ) {
+                $scheme = "master";
+            } else {
+                $scheme = $jname;
+            }
+            $root_mp = "/$Conf::jbase_fs_mp/$jname";
+
+        }
+
+        if ( $jname eq "base" ) {
+            $chroot_mp = "$Conf::tmp_fsh/$Conf::fs_scheme{$scheme}{'/'}{'fsn'}.$snapshot_version";
+
+        } else {
+            $chroot_mp = "$root_mp$Conf::tmp_fsh/$Conf::fs_scheme{$scheme}{'/'}{'fsn'}.$snapshot_version";
+
+        }
+
+        $umount_status = umount_recursively($chroot_mp,"bymp");
+
+
+    }
+
+    if ( $umount_status == 0 ) {
+        print "\n>>zLUe> Umounting of '$jname' system has passed successfully!\n";
+
+    } else {
+        die "\n>>zLUe> Umounting of '$jname' system has failed!\n";
+
+    }
+
+}
+
+sub copy_env {
+
+    my($src_jname, $dst_jname, $type) = @_;
+
+    my $scheme;
+    my ($src_fs, $dst_fs, $src_mp, $dst_mp, $src_mp_fs);
+    my ($scheme, $lue_type_fs, $snapshot_version, $dst_zfs_properties);
+    my $lue_version;
+
+    my $src_root_fs = "$Conf::jbase_fs/$src_jname";
+    my $src_root_mp = "/$Conf::jbase_fs_mp/$src_jname";
+
+    my $dst_root_fs = "$Conf::jbase_fs/$dst_jname";
+    my $dst_root_mp = "/$Conf::jbase_fs_mp/$dst_jname";
+
+
+    check_yesno("Start to copy '$src_jname' to '$dst_jname'","Y/N","Y");
+
+    ($lue_version,$scheme) = check_lue_ready($src_root_fs,$src_root_mp,$src_jname,undef,"source");
+    $snapshot_version = $lue_version;
+
+    if ( $scheme ne "master" ) {
+        print "\n\tWARNING: Pay attention to '$scheme' scheme will be inconsistent with '$dst_jname' jail name !!!\n";
+        print "\t         Remember that some changes of this scheme cause corresponding changes of this jail during update.\n";
+        sleep 5;
+    }
+
+    print "=> Create filesystems for $dst_root_fs...\n";
+    do_create_fs($dst_root_fs,undef,{"mountpoint" => "none", "lue:scheme" => "$scheme", "lue:jname" => "$dst_jname"});
+
+    # get hash of mountpoint=>fs over $src_root_fs
+    $src_mp_fs = get_list_mp_mountedfs($src_root_fs);
+
+    foreach $src_mp ( sort {$a cmp $b}  keys %$src_mp_fs ) {
+
+        $src_fs = $$src_mp_fs{$src_mp};
+
+        $lue_type_fs = zfs_get($src_fs,"lue:type",$Val::zfs_ps);
+        if ( $type ne "all" && $lue_type_fs ne $type ) {
+            next;
+        }
+
+        $dst_fs = (split(/$src_root_fs\//,$src_fs))[1];
+        $dst_fs = "$dst_root_fs/$dst_fs";
+
+        $dst_mp = (split(/$src_root_mp/,$src_mp))[1];
+        $dst_mp = "$dst_root_mp$dst_mp";
+
+        $dst_zfs_properties = zfs_get_properties($src_fs,$Val::zfs_ps);
+        %$dst_zfs_properties = (%$dst_zfs_properties,
+                                "mountpoint" => "$dst_mp",
+                                "lue:jname" => "$dst_jname",
+        );
+
+        print "\n=> copy $src_mp to $dst_mp ( $src_fs -> $dst_fs )\n";
+        if ( zfs_get($src_fs,"lue:clone_only",$Val::zfs_ps) eq "yes" ) {
+
+           do_clone_fs(zfs_get($src_fs,"origin",undef),$dst_fs,undef,$dst_zfs_properties);
+
+        } else {
+
+           do_snapshot($src_fs,"$snapshot_version.cp-$dst_jname",undef,("lue:reason=copy"));
+           do_copy_fs("$src_fs\@$snapshot_version.cp-$dst_jname",$dst_fs);
+           zfs_sets($dst_fs,$dst_zfs_properties,$Val::zfs_ps);
+           delete_snapshot($src_fs,"$snapshot_version.cp-$dst_jname","y");
+
+        }
+
+    }
+
+    finish_annotate($dst_jname,$dst_root_fs,$snapshot_version);
+
+}
+
+sub show_env {
+
+    my ($jname, $show_lue_version, $param) = @_;
+
+    my ($parent_fs, $root_mp, $mp_fs, %mp_fs_h, $fs, $mp);
+    my ($scheme, $scheme_mp, $zps, $lue_consistency, $lue_version);
+    my (%zfs_properties, $fs_mp, $fs_mp_versions);
+    my (@zp_list, $property, $value, $lue_jname);
+    my ($max_lo_mp, $max_lo_fs, $max_sum);
+    my @cmd;
+
+    my %zps = ("lue:liveupdate" => "%-3s",
+               "lue:status" => "%-7s",
+               "lue:version" => "%-10s",
+               "lue:parent" => "%-10s",
+               "lue:type" => "%-6s",
+               "lue:scheme" => "%-10s",
+               "lue:mountpoint" => "%-20s",
+               "lue:mode" => "%-10s",
+               "lue:candel" => "%-3s",
+               "lue:clone_only" => "%-3s");
+
+    if ( $jname eq "base" ) {
+
+        $parent_fs = $Conf::zpool_base;
+        $root_mp = "/";
+
+    } else {
+
+        $parent_fs = "$Conf::jbase_fs/$jname";
+        $root_mp = "/$Conf::jbase_fs_mp/$jname";
+
+    }
+
+    # current version
+    if ( !defined $show_lue_version ) {
+        ($lue_version,$scheme) = check_lue_ready($parent_fs,$root_mp,$jname,undef,"current");
+
+    # specified version
+    } else {
+        ($lue_version,$scheme) = check_lue_ready($parent_fs,$root_mp,$jname,$show_lue_version,"specified");
+
+    }
+
+    if ( $lue_version eq "firstly" || !defined $scheme ) {
+
+        if ( $param eq "status" ) {
+            print ">>zLUe> System status : NONEXISTENT\n\n";
+        } else {
+            print ">>zLUe> The LUE does not exist.\n\n";
+        }
+        exit;
+
+    }
+
+    # STATUS
+    if ( $param eq "status" ) {
+
+        #$lue_version = define_current_version($root_mp);
+
+        %zfs_properties = ("lue:jname" => "$jname",
+                           "lue:scheme" => "$scheme"
+        );
+
+        # current version
+        if ( !defined $show_lue_version ) {
+            $zfs_properties{"lue:status"} = "current";
+
+        # specified version
+        } else {
+            $zfs_properties{"lue:version"} = "$show_lue_version";
+
+        }
+
+        $fs_mp = get_list_fs_mp_with_properties($parent_fs,\%zfs_properties,"fs",$Val::zfs_ps);
+
+        # current version
+        if ( !defined $show_lue_version ) {
+            $lue_consistency = check_consistency($jname,$lue_version,$scheme,$fs_mp,"all",$root_mp,undef,"current");
+
+        # specified version
+        } else {
+            $lue_consistency = check_consistency($jname,$lue_version,$scheme,$fs_mp,"all",$root_mp,undef,"specified");
+
+        }
+
+        if ( $lue_consistency == 0 ) {
+            print ">>zLUe> System status : OK\n\n";
+        } else {
+            print ">>zLUe> System status : INCONSISTENT\n\n";
+        }
+
+        exit;
+
+    # VERSIONS
+    } elsif ( $param eq "versions" || $param eq "ver") {
+
+        %zfs_properties = ("lue:jname" => "$jname",
+                           "lue:mountpoint" => "/",
+                           "lue:scheme" => "$scheme");
+
+        $fs_mp_versions = get_list_fs_mp_with_properties($parent_fs,\%zfs_properties,"fs",$Val::zfs_ps);
+
+        # print header
+        print_symbol("=","24");
+        print "\n";
+        printf("| $zps{'lue:version'} | $zps{'lue:status'} |\n","version","status");
+        print_symbol("=","24");
+        print "\n";
+
+        foreach $fs ( keys %$fs_mp_versions ) {
+
+            printf("| $zps{'lue:version'} | $zps{'lue:status'} |\n",zfs_get($fs,"lue:version",$Val::zfs_ps),zfs_get($fs,"lue:status",$Val::zfs_ps));
+
+        }
+        print_symbol("=","24");
+        print "\n";
+
+        exit;
+
+    }
+
+    # OTHERS
+    # get hash of mountpoint=>fs over $parent_fs
+
+    # current version
+    # get all mounted fs
+    if ( !defined $show_lue_version ) {
+        $mp_fs = get_list_mp_mountedfs($parent_fs);
+
+    # specified version
+    } else {
+
+        %zfs_properties = ("lue:jname" => "$jname",
+                           "lue:scheme" => "$scheme",
+                           "lue:version" => "$show_lue_version"
+        );
+        $fs_mp = get_list_fs_mp_with_properties($parent_fs,\%zfs_properties,"fs",$Val::zfs_ps);
+        %mp_fs_h = reverse %$fs_mp;
+        $mp_fs = \%mp_fs_h;
+
+    }
+
+    # calculate width of rows
+    $max_lo_mp = 10;
+    $max_lo_fs = 10;
+    foreach $mp ( sort {$a cmp $b}  keys %$mp_fs ) {
+
+        $fs = $$mp_fs{$mp};
+
+        $max_lo_mp = length($mp) if ( length($mp) > $max_lo_mp );
+        $max_lo_fs = length($fs) if ( length($fs) > $max_lo_fs );
+
+    }
+
+    $max_sum = $max_lo_mp + $max_lo_fs;
+    $max_lo_mp = "%-" . $max_lo_mp . "s";
+    $max_lo_fs = "%-" . $max_lo_fs . "s";
+
+    if ( !defined $param || $param eq "brief" ) {
+
+        # print header
+        $max_sum += 46;
+        print_symbol("=",$max_sum);
+        print "\n";
+        printf("$max_lo_mp | $max_lo_fs | $zps{'lue:liveupdate'} | $zps{'lue:version'} | $zps{'lue:type'} | $zps{'lue:mode'} |\n",
+               "mountpoint","filesystem","lue","version","type","mode");
+        print_symbol("=",$max_sum);
+        print "\n";
+
+        @zp_list = ("lue:liveupdate","lue:version","lue:type","lue:mode");
+
+    } elsif ( $param eq "detail" ) {
+
+        # print header
+        $max_sum += 5;
+        print_symbol("=",$max_sum);
+        print "\n";
+        printf("$max_lo_mp | $max_lo_fs |\n","mountpoint","filesystem");
+        print_symbol("=",$max_sum);
+        print "\n";
+
+        @zp_list = ("lue:liveupdate","lue:status","lue:version","lue:parent","lue:type","lue:scheme","lue:mountpoint","lue:candel","lue:clone_only");
+
+    }
+
+    foreach $mp ( sort {$a cmp $b}  keys %$mp_fs ) {
+       
+        $fs = $$mp_fs{$mp};
+        $lue_jname = zfs_get($fs,"lue:jname",$Val::zfs_ps);
+
+        if ( $lue_jname eq $jname || $lue_jname eq "" ) { 
+
+            if ( !defined $param || $param eq "brief" ) {
+                
+                printf("$max_lo_mp | $max_lo_fs |",$mp,$fs);
+                foreach $property ( @zp_list ) {
+                    $value = zfs_get($fs,$property,$Val::zfs_ps);
+                    $value = "-" if ( !defined $value );
+                    printf(" $zps{$property} |",$value);
+                }
+                print "\n";
+
+            } elsif ( $param eq "detail" ) {
+
+                printf("$max_lo_mp | $max_lo_fs\n",$mp,$fs);
+                foreach $property ( @zp_list ) {
+
+                    printf("$max_lo_mp "," ");
+                    $value = zfs_get($fs,$property,$Val::zfs_ps);
+                    $value = "-" if ( !defined $value );
+                    printf("  %s = '%s'\n",$property,$value);
+
+                }
+                print "\n";
+
+            }
+
+        }
+
+    }
+
+    print_symbol("=",$max_sum);
+    print "\n\n";
+
+}
+
+
+sub create_snapshot {
+
+    my ($jname, $snapshot_version) = @_;
+    my ($fs);
+    my $fs_list = get_list_fs("$Conf::jbase_fs/$jname");
+
+    	check_yesno("Start to create snapshot '$jname' system","Y/N/S","Y");
+
+        foreach $fs (@$fs_list) {
+            if ( !defined zfs_get("$fs\@$snapshot_version","creation") ) {
+	        print "Create snapshot $fs\@$snapshot_version...\n";
+                do_snapshot($fs,$snapshot_version,undef,("lue:reason=backup"));
+            } else {
+		print "Snapshot $fs\@$snapshot_version is exist.\n";
+            }
+        }
+
+}
+
+sub delete_snapshot {
+
+    my ($fs, $snapshot_version, $yesno) = @_;
+    my (@cmd,$snap,@snap_list);
+    my $exec_string = "$Util::zfs list -rH -o name -t snapshot $fs";
+
+    if ( $yesno ne "y" ) {
+        check_yesno("Start to delete snapshot for tree '$fs' filesystem","Y/N","Y");
+    }
+
+
+    open (SNAP_LIST,"$exec_string |") || die "Can't exec $exec_string: $!";
+    while ($snap = <SNAP_LIST>) {
+       chomp $snap;
+       @snap_list = (@snap_list,$snap) if ( $snap =~ /\@$snapshot_version/ );
+    }
+    close SNAP_LIST;
+
+    foreach $snap ( sort {$a cmp $b} @snap_list ) {
+        print "\t=> delete $snap\n";
+        exec_sh("yes","$Util::zfs destroy $snap");
+    }
+
+}
+
+sub zfs_set {
+
+    my ($fs, $property, $value, $source) = @_;
+    my $value_current = zfs_get($fs,$property,$source);
+
+    if ( $value_current ne $value ) {
+        exec_sh("yes","$Util::zfs set $property=$value $fs");
+        verbose("\t  + $fs : $property : '$value_current' => '$value'");
+    } else {
+        verbose("\t  - $fs : $property : '$value_current' = '$value', no any changes");
+    } 
+
+}
+
+sub zfs_inherits {
+
+    my ($fs, $properties, $value) = @_;
+
+    my ($property, $value);
+
+    while ( ($property,$value) = each (%$properties) ) {
+        exec_sh("yes","$Util::zfs inherit $property $fs");
+    }
+
+}
+
+# zfs will set values_list if it does not exist in a getting values_list
+sub zfs_sets {
+
+    my ($fs, $properties, $source) = @_;
+
+    my ($property, $value);
+    my (@value_set_list, $values_set);
+    my (@value_get_list, $values_get);
+    my (%values_merge, $values_set_new, $values_get_new);
+
+    foreach $property ( keys %$properties ) {
+
+        $values_set = $$properties{$property};
+        if ( ! defined $values_set ) {
+
+            verbose("\t  - $fs : $property : value of setting property is not defined, ignore the property");
+            next;
+
+        }
+
+        $values_get = zfs_get($fs,$property,$source);
+
+        # setting value is a 'list' type
+        if ( $Val::lue_params_type{$property} eq "list" ) {
+
+            @value_set_list = split(/,/,$values_set);
+
+            # getting value is defined
+            if ( defined $values_get ) {
+
+                @value_get_list = split(/,/,$values_get);
+
+                %values_merge = ();
+                #@values_merge{@value_set_list, @value_get_list}=();
+                @values_merge{@value_get_list}=();
+                delete $values_merge{'none'} if ( exists $values_merge{'none'} );
+
+                @values_merge{@value_set_list}=();
+
+                $values_set_new = join(',', sort {$a cmp $b} keys (%values_merge) );
+                $values_get_new = join(',', sort {$a cmp $b} @value_get_list);
+
+            # getting value is not defined
+            } else {
+
+                $values_set_new = join(',', sort {$a cmp $b} @value_set_list);
+
+            }
+
+
+        # setting value is not a 'list' type
+        } else {
+
+            $values_set_new = $values_set;
+            $values_get_new = $values_get;
+
+        }
+
+        if ( $values_get_new ne $values_set_new ) {
+
+            exec_sh("yes","$Util::zfs set $property=$values_set_new $fs");
+            verbose("\t  + $fs : $property : '$values_get' => '$values_set_new'");
+
+        } else {
+            verbose("\t  - $fs : $property : '$values_get' = '$values_set_new', no any changes");
+
+        }
+
+    }
+
+}
+
+sub zfs_del_from_list {
+
+    my ($fs, $property, $value) = @_;
+
+    my (%value_cur_list, $value_cur, $value_new);
+
+    $value_cur = zfs_get($fs,$property);
+
+    # It is a list
+    if ( $value_cur =~ /,/ ) {
+
+        @value_cur_list{split(/,/,$value_cur)} = ();
+
+        if ( exists $value_cur_list{$value} ) {
+
+            delete $value_cur_list{$value};
+            $value_new = join(",", sort keys (%value_cur_list));
+            exec_sh("yes","$Util::zfs set $property=$value_new $fs");
+
+        }
+
+    # Only $value
+    } else {
+
+        $value_new = "none";
+        exec_sh("yes","$Util::zfs set $property=none $fs");
+
+    }
+
+    return $value_new;
+
+}
+
+sub zfs_get {
+
+    my ($fs, $property, $source) = @_;
+    my ($value, $exec_string);
+
+    if ( defined $source ) {
+        $exec_string = "$Util::zfs get -H -o value -s $source $property $fs";
+    } else {
+        $exec_string = "$Util::zfs get -H -o value $property $fs";
+    }
+
+    open (VALUE,"$exec_string 2>/dev/null |") || die "Can't exec $exec_string: $!";
+    $value = <VALUE>;
+    chomp $value;
+    close VALUE;
+
+    #print "$property = 'value'n";
+    return $value;
+}
+
+sub zfs_get_properties {
+
+    my ($fs, $source) = @_;
+
+    my ($str, $exec_string);
+    my ($property, $value, %pv);
+
+    if ( defined $source ) {
+        $exec_string = "$Util::zfs get -H -o property,value -s $source all $fs";
+    } else {
+        $exec_string = "$Util::zfs get -H -o property,value all $fs";
+    }
+
+    open (VALUE,"$exec_string 2>/dev/null |") || die "Can't exec $exec_string: $!";
+    while ($str = <VALUE>) {
+        chomp $str;
+        ($property,$value) = (split(/\s+/,$str))[0,1];
+        $pv{$property} = $value;
+    }
+    close VALUE;
+
+    #print "$property = 'value'n";
+    return \%pv;
+
+}
+
+sub zfs_unmount {
+
+    my (@fs_list) = @_;
+    my ($fs, $mount_status);
+
+    foreach $fs ( @fs_list ) {
+        $mount_status = zfs_get($fs,"mounted",undef);
+        exec_sh("yes",("$Util::zfs unmount -f $fs")) if ( $mount_status eq "yes" );
+    }
+
+}
+
+sub zfs_promote {
+
+    my (@fs_list) = @_;
+    my ($fs);
+
+    foreach $fs ( @fs_list ) {
+        exec_sh("yes",("$Util::zfs promote $fs")) if ( zfs_get($fs,"origin",undef) ne "-" );
+    }
+
+}
+
+sub zpool_set {
+
+    my ($zpool, $property, $value) = @_;
+    my $value_current = zpool_get($zpool,$property);
+
+    if ( $value_current ne $value ) {
+        exec_sh("yes","$Util::zpool set $property=$value $zpool");
+	print "\t+ $zpool : $property : '$value_current' => '$value'\n";
+    } else {
+        print "\t- $zpool : $property : '$value_current' = '$value', no any change\n";
+    }
+
+}
+
+sub zpool_get {
+
+    my ($zpool, $property) = @_;
+    my ($value,$str);
+
+    my $exec_string = "$Util::zpool get $property $zpool";
+    open (VALUE,"$exec_string 2>/dev/null |") || die "Can't exec $exec_string: $!";
+
+    while ($str = <VALUE>) {
+        if ( $str =~ /$zpool/ ) {
+            $value = (split(/\s+/,$str))[2];
+            last;
+        }
+    }
+
+    close VALUE;
+    return $value;
+}
+
+# get something 
+# dst 4 src: mp4fs, fs4mp, fs4dir, type4fs, type4mp, type4dir
+# $dst = get_sth_df($what, $src, $options)
+# $what: mp4fs, fs4mp, fs4dir, type4fs, type4mp, type4dir
+sub get_sth_df {
+
+    my ($what, $src, $options) = @_;
+    my ($str, $dst, @out);
+    
+    my $exec_string = "$Util::df -T $options $src";
+    open (VALUE,"$exec_string 2>/dev/null |") || die "Can't exec $exec_string: $!";
+
+    while ( $str = <VALUE> ) {
+
+        chomp $str;
+        if ( $str !~ /^Filesystem / ) {
+
+            @out = (split(/\s+/,$str));
+            debug(3,"=> src:'$src'; mp : '$out[0]' ; fs : '$out[6]'");
+
+            if ( $what eq "mp4fs" ) {
+                $dst = $out[6];
+
+            } elsif ( $what eq "fs4mp" && $out[6] eq $src ) {
+                $dst = $out[0];
+
+            } elsif ( $what eq "fs4dir" ) {
+                $dst = $out[0];
+
+            } elsif ( $what eq "type4fs" ) {
+                $dst = (split(/\s+/,$str))[1];
+
+            } elsif ( $what eq "type4mp" && $out[6] eq $src ) {
+                $dst = (split(/\s+/,$str))[1];
+
+            } elsif ( $what eq "type4dir" ) {
+                $dst = (split(/\s+/,$str))[1];
+            }
+
+            last;
+        }
+
+    }
+
+    close VALUE;
+
+    return $dst;
+
+}
+
+# get list mountpoint of $fs by 'df' command
+sub get_list_mp_fs_by_df_recur {
+
+    my ($root_, $options, $by_what) = @_;
+    my ($root_mp, $fs, $mp, %mp_fs, $str);
+
+    # by fs
+    if ( $by_what eq "byfs" ) {
+        $root_mp = get_sth_df("mp4fs",$root_,$options);
+    # by mp
+    } else {
+        $root_mp = $root_;
+    }
+
+    if ( ! defined $root_mp ) {
+
+        print "\t\tWarning: mountpoint for filesystem is not defined !!!\n";
+        return \%mp_fs;
+
+    }
+
+    my $exec_string = "$Util::df $options";
+    open (DF,"$exec_string 2>/dev/null |") || die "Can't exec $exec_string: $!";
+
+    while ($str = <DF>) {
+        chomp $str;
+        ($fs,$mp) = (split(/\s+/,$str))[0,5];
+        if ( $mp =~ /^$root_mp/ ) {
+           %mp_fs = (%mp_fs,$mp,$fs);
+        }
+    }
+
+    close DF;
+    return \%mp_fs;
+
+}
+
+# $jname or $scheme ???
+
+# to compute mountpoint
+# for current/new LUE
+# for base:("base",undef/"",$scheme_mp,$lue_view)
+# for jail:("jail",$root_mp / $chroot_mp,$scheme_mp,$lue_view)
+# $lue_view: new, current
+sub compute_mp {
+
+    my ($scheme, $chroot_mp, $scheme_mp, $lue_view) = @_;
+
+    my $computed_mp;
+
+
+    if ( $scheme eq "base" ) {
+
+        if ( $lue_view eq "current" ) {
+
+            $computed_mp = $scheme_mp;
+
+        } elsif ( $lue_view eq "new" ) {
+
+            $computed_mp = chroot_if_scheme_mp_slash($scheme_mp,$chroot_mp);
+
+        }
+
+    # for 'jail' system
+    } else {
+
+        $computed_mp = chroot_if_scheme_mp_slash($scheme_mp,$chroot_mp);
+
+    }
+
+    return $computed_mp;
+
+}
+
+sub chroot_if_scheme_mp_slash {
+
+    my ($scheme_mp, $chroot_mp) = @_;
+    my $computed_mp;
+
+    if ( $scheme_mp ne "/" ) {
+        $computed_mp = "$chroot_mp$scheme_mp";
+
+    } else {
+        $computed_mp = "$chroot_mp";
+
+    }
+
+    return $computed_mp;
+
+}
+
+# unmount fs $fs recursively
+sub umount_recursively {
+
+    my ($root_,$by_what) = @_;
+    my ($mp_fs_recur, $mp_r);
+    my ($exec_status, $umount_status) = (0,0);
+
+    $mp_fs_recur = get_list_mp_fs_by_df_recur($root_,undef,$by_what);
+
+    foreach $mp_r ( sort {$b cmp $a} keys (%$mp_fs_recur) )  {
+
+        $exec_status = exec_sh("yes","$Util::umount -f $mp_r");
+        $umount_status += $exec_status;
+
+    }
+
+    return $umount_status;
+
+}
+
+# mount fs $root_fs recursively
+sub mount_recursively {
+
+    my ($root_fs) = @_;
+    my ($mp, $fs);
+
+    my $fs_mp = get_list_fs_mp_with_properties($root_fs,{"canmount" => "on"},"fs",$Val::zfs_ps);
+    my %mp_fs = reverse %$fs_mp;
+
+    foreach $mp ( sort {$a cmp $b} keys (%mp_fs) )  {
+        $fs = $mp_fs{$mp};
+        exec_sh("yes","$Util::zfs mount $fs") if ( ! defined get_sth_df("mp4fs",$fs,undef) );
+    }
+
+}
+
+sub mount_fs {
+
+    my ($fs, $mp, $options) = @_;
+    my $exit_status=0;
+    
+    exec_sh("no","$Util::mkdir -p $mp") if ( !stat("$mp"));
+    $exit_status = exec_sh("no","$Util::mount $options $fs $mp");
+
+    return $exit_status;
+
+}
+
+# get list of mountpoints of mounted filesystems by zfs get
+sub get_list_mp_mountedfs {
+
+    my ($root_fs) = @_;
+
+    my ($str, @fs_list, %mp_fs, $mp_, $fs_);
+    my ($mount_zfs_status);
+
+    my $exec_string = "$Util::zfs get -rH -o value,name mountpoint $root_fs";
+    open (MOUNT_POINT,"$exec_string |") || die "Can't exec $exec_string: $!";
+    while ($str = <MOUNT_POINT>) {
+
+        chomp $str;
+        ($mp_,$fs_) = (split(/\s+/,$str))[0,1];
+        next if ( $mp_ eq "none" || $mp_ eq "-" );
+        $mount_zfs_status = zfs_get($fs_,"mounted",undef);
+
+        if ( $mount_zfs_status eq "yes" ) {
+
+            if ( $mp_ eq "legacy" ) {
+                $mp_=get_sth_df("mp4fs",$fs_,undef);
+                next if ( ! defined $mp_ );
+            } 
+            %mp_fs = (%mp_fs,$mp_,$fs_);      
+
+        }
+
+    }
+
+    close MOUNT_POINT;
+
+    return \%mp_fs;
+
+}
+
+# list only filesystem, not snapshot, not clone
+sub get_list_fs {
+
+    my ($fs,$dir) = @_;
+
+    my (@fs_list,@fs_,$fs_);
+    my $exec_string = "$Util::zfs list -rH -o name $fs";
+
+    open (LIST,"$exec_string |") || die "Can't exec $exec_string: $!";
+    while ($fs_ = <LIST>) {
+       chomp $fs_;
+       #print "$fs_\n";
+       @fs_ = (@fs_,$fs_) if ( zfs_get("$fs_","origin") eq "-" && zfs_get("$fs_","mounted") eq "yes" );
+    }
+    close LIST;
+
+    if ( $dir eq "reverse" ) {
+        foreach $fs_ (  sort {$b cmp $a} @fs_ ) {
+            @fs_list = (@fs_list,$fs_);
+        }
+    } else {
+        foreach $fs_ (  sort {$a cmp $b} @fs_ ) {
+            @fs_list = (@fs_list,$fs_);
+        }
+
+    }
+
+    return \@fs_list;
+
+}
+
+# $properties = {'property0' => 'value00', 'property1' => '!value10', 'property2' => 'value20|value21',
+#                'property3' => 'value30,value31...', 'property4' => '!value40|value41',}
+# zfs_get values can be = 'value','value0,value1,value2'
+# 'mountpoint' may not be used as property.
+sub get_list_fs_mp_with_properties {
+
+    my ($root_fs, $properties, $fs_type, $source) = @_;
+
+    my ($str, %fs_mp, $fs, $mp);
+
+    my ($property, $value);
+
+    my ($cmp_status, $negative_status, $cmp_sum_status);
+
+    my ($and_or);
+
+    my ($value_req, @values_req);
+    my ($value_get, %values_get);
+
+    my $exec_string = "$Util::zfs get -rH -o name,value mountpoint $root_fs";
+
+    debug(3,"=> New searching within '$root_fs'");
+    if ( !defined $root_fs ) {
+        print "\n\tWARNING: Does not defined filesystem for fs->mp list.\n";
+        return \%fs_mp;
+    }
+
+    # get list of fss
+    open (FS,"$exec_string |") || die "Can't exec $exec_string: $!";
+    while ($str = <FS>) {
+
+        chomp $str;
+        ($fs,$mp) = (split(/\s+/,$str))[0,1];
+        next if ( $fs_type ne "snapshot" && ( $mp eq "none" || $mp eq "-" ) );
+        debug(3,"\n=> fs:'$fs' mp:'$mp'");
+
+        if ( $mp eq "legacy" ) {
+
+            $mp = get_sth_df("mp4fs",$fs,undef);
+            if ( ! defined $mp ) {
+                $mp = zfs_get($fs,"lue:mountpoint",$source);
+            }
+            next if ( ! defined $mp );
+
+        }
+
+        # compare getting value of property with requested value
+        $cmp_sum_status = 0;
+        foreach $property ( keys %$properties ) {
+
+            # requested values
+            $value_req = $$properties{$property};
+            debug(3,"\t1:prop:'$property' => reqval:'$value_req'");
+
+            # if property is undef, then it is ignored
+            if ( !defined $value_req ) {
+                debug(3,"\t1:prop:'$property' => reqval:undef => get next property");
+                next;
+
+            }
+
+
+            # if $val_req is presents like "value0,value1",i.e. value0 and value1
+            if ( $value_req =~ /,/ ) {
+                @values_req = split(/,/,$value_req);
+                $and_or = 1;
+
+            # if $val_req is presents like "value0|value1",i.e. value0 or value1
+            } elsif ( $value_req =~ /|/ ) {
+                @values_req = split(/\|/,$value_req);
+                $and_or = 2;
+
+            } else {
+                @values_req = ($value_req);
+                $and_or = 1;
+
+            }
+
+            # getting values
+            $value_get = zfs_get($fs,$property,$source);
+            debug(3,"\t2:prop:'$property' =  getval:'$value_get'");
+
+            # get next fs, if getting value is not defined
+            if ( ! defined $value_get ) {
+                $cmp_sum_status = 1;
+                last;
+            }
+
+            chomp $value_get;
+            %values_get = ();
+            @values_get{split(/,/,$value_get)}=();
+
+
+            $cmp_status = 0;
+            foreach $value ( @values_req ) {
+
+                debug(3,"\t3:prop:'$property' =  getval:'$value_get' <= reqval:'$value'");
+
+                if ( $value =~ /!/ ) {
+                    $negative_status = 1;
+                    $value_req = (split(/\!/,$value))[1];
+
+                } else {
+                    $negative_status = 0;
+                    $value_req = $value;
+
+                }
+
+                # requested value is present in getting values
+                if ( exists $values_get{$value_req} ) {
+
+                    if ( $negative_status == 0 ) {
+                        $cmp_status = 0;
+                        if ( $and_or == 2 ) {
+                            debug(3,"\t4:prop:'$property': get it");
+                            last;
+                        }
+
+                    } else {
+                        $cmp_status++;
+                        if ( $and_or == 1 ) {
+                            debug(3,"\t5:prop:'$property': don't get it");
+                            last;
+                        }
+
+                    }
+
+                # requested value is not present in getting values
+                } else {
+
+                    if ( $negative_status == 0 ) {
+                        $cmp_status++;
+                        if ( $and_or == 1 ) {
+                            debug(3,"\t6:prop:'$property': don't get it");
+                            last;
+                        }
+
+                    } else {
+                        $cmp_status = 0;
+                        if ( $and_or == 2 ) {
+                            debug(3,"\t7:prop:'$property' get it");
+                            last;
+                        }
+
+                    }
+
+                }
+
+            }
+
+            $cmp_sum_status = $cmp_sum_status + $cmp_status;
+
+            # get next filesystem, if the first fault of property has been got
+            if ( $cmp_status != 0 ) {
+                debug(3,"\t8:prop:'$property': don't get it, next fs");
+                last;
+            }
+            ($property, $value, $value_req, $value_get) = ();
+
+        }
+
+        debug(3,"\t9:sum_status:'$cmp_sum_status'");
+        if ( $cmp_sum_status == 0 ) {
+            %fs_mp = (%fs_mp,$fs,$mp);
+            debug(3,"=+ '$fs' has been got");
+        } else {
+            debug(3,"=- '$fs' has not been got");
+        }
+
+    }
+
+    close FS;
+
+    return \%fs_mp;
+
+}
+
+sub get_fs_with_properties {
+
+    my ($properties, $list_fs, $source) = @_;
+
+    my ($fs, $fs_res, $property, $value, $value_res);
+    my $cmp_status;
+
+    foreach $fs ( @$list_fs ) {
+
+        $cmp_status = 0;
+        while ( ($property,$value) = each (%$properties) ) {
+
+            $value_res = zfs_get($fs,$property,$source);
+            #print "'$fs' '$property' '$value' '$value_res'\n"; # debug "
+            if ( $value ne $value_res ) {
+                $cmp_status++;
+            }
+            $property = $value = $value_res = "";
+
+        }
+
+        #print "- $fs $cmp_status\n"; # debug "
+        if ( $cmp_status == 0 ) {
+            $fs_res = $fs;
+            last;
+        }
+
+    }
+
+    return $fs_res;
+
+}
+
+sub does_snapshot_exist {
+
+    my ($snap) = @_;
+
+        if ( !defined zfs_get("$snap","type") ) {
+            die "Not found snapshot $snap !?!";
+        }
+
+}
+
+sub make_snapshot_recursively {
+
+    my ($snapshot_version) = @_;
+
+    print "\nYou need do the snapshot for 'master' jail now to create custom jails\n";
+    print " or you will may do that later by 'zfs snapshot -r $Conf::master_jfs\@$snapshot_version'. \n";
+    check_yesno("Create snapshot for 'master' jail now","Y/N","Y");
+    exec_sh("yes","$Util::zfs snapshot -r $Conf::master_jfs\@$snapshot_version");
+
+}
+
+# create a snapshot $fs@$snapshot_version with properties @properties
+#
+sub do_snapshot {
+
+    my ($fs, $snapshot_version, $options, @properties) = @_;
+    my ($property, $property_list, $fs_list, $fs_);
+
+    foreach $property ( @properties ) {
+        $property_list="$property_list -o $property";
+    }
+
+    if ( $options =~ /-r/ ) {
+
+        $fs_list = get_list_fs($fs);
+        foreach $fs_ (@$fs_list) {
+            exec_sh("yes","$Util::zfs snapshot $property_list $fs_\@$snapshot_version");
+        }
+
+    } else {
+            exec_sh("yes","$Util::zfs snapshot $property_list $fs\@$snapshot_version");
+    }
+
+}
+
+
+sub do_clone_fs {
+
+    my ($snapshot, $clone, $options, $properties) = @_;
+    my ($property, $value, $property_list);
+
+    while ( ($property,$value) = each (%$properties) ) {
+        $property_list="$property_list -o $property=$value";
+    }
+
+    exec_sh("yes","$Util::zfs clone $property_list $snapshot $clone");
+
+}
+
+sub do_create_fs {
+
+    my ($new_fs, $options, $properties) = @_;
+    my ($property, $value, $property_list);
+
+    while ( ($property,$value) = each (%$properties) ) {
+        $property_list="$property_list -o $property=$value";
+    }
+
+    exec_sh("yes","$Util::zfs create $property_list $new_fs");
+
+}
+
+
+
+sub do_copy_fs {
+
+    my ($snapshot, $fs) = @_;
+
+    exec_sh("yes","$Util::zfs send -v $snapshot | $Util::zfs recv -v -F $fs");
+
+}
+
+sub do_rename_fs {
+
+    my ($old_fs, $new_fs) = @_;
+
+    exec_sh("yes","$Util::zfs rename $old_fs $new_fs");
+
+}
+
+sub do_rm_dir {
+
+    my ($dir) = @_;
+
+    exec_sh("yes","$Util::rm -r $dir") if ( stat("$dir") );
+
+}
+
+sub do_copy_fs_by_tar {
+
+    my ($scheme, $src_chroot, $src_dir, $dst_dir) = @_;
+    my ($chroot, $mp, $exclusion_list);
+
+    if ( $src_chroot eq "/" ) {
+        $chroot = $src_dir;
+    } else {
+        $chroot = "$src_chroot$src_dir";
+    }
+
+    # copy if source directory does exist
+    if ( stat("$chroot")) {
+
+        print "\tMaking copy '$chroot' to '$dst_dir'.\n\tIt will take some time, please wait...\n";
+
+        # define exclude list of recursively descending directories 
+        # which will be created lately as appropriate filesystems
+        foreach $mp ( sort {$a cmp $b}  keys %{$Conf::fs_scheme{$scheme}} ) {
+
+            #print "$mp\n";
+            next if ( $mp eq $src_dir );
+            if ( ( $src_dir eq "/" && $mp =~ /^$src_dir/ ) || ( $src_dir ne "/" && $mp =~ /^$src_dir\// ) ) {
+                $mp = ".$mp" if ( $src_chroot ne "/" );
+                $exclusion_list = "$exclusion_list --exclude $mp";
+            }
+
+        }
+
+        # always exclude destination dir
+        $exclusion_list = "$exclusion_list --exclude $dst_dir";
+
+        exec_sh("yes","$Util::mkdir $dst_dir") if ( !stat($dst_dir));
+        if ( $src_chroot ne "/" ) {
+            exec_sh("yes","$Util::tar -cf - --one-file-system $exclusion_list -C $src_chroot .$src_dir  | tar -xpf - -C $dst_dir");
+        } else {
+            exec_sh("yes","$Util::tar -cf - --one-file-system $exclusion_list $src_dir | tar -xpf - -C $dst_dir");
+        }
+
+    } else {
+
+        print "\tNothing to copy, because of original '$chroot' does not exist.\n";
+
+    }
+
+}
+
+sub do_copy_dir_by_tar {
+
+    my ($src_dir, $dst_dir) = @_;
+
+    if ( defined $src_dir && defined $dst_dir ) {
+
+        exec_sh("yes","$Util::tar -cf - --one-file-system -C $src_dir ./ | tar -xpf - -C $dst_dir");
+
+    } else {
+
+        print "WARNING: src '$src_dir' or dst '$dst_dir' directories are not defined.\n";
+
+    }
+
+}
+
+# define current $lue_version and $lue_scheme of $jname system
+# on base of $parent_fs and $root_mp
+# $lue_view - output info parameter: current, new, source
+sub check_lue_ready {
+
+    my ($parent_fs, $root_mp, $jname, $check_lue_version, $lue_view) = @_;
+
+    my ($fs_mp, $fs, $lue_version, $lue_scheme, $lue_status, $lue_creation);
+    my %zfs_properties;
+
+    %zfs_properties = (
+                           "lue:jname" => "$jname",
+                           "lue:mountpoint" => "/",
+                           "lue:type" => "system",
+                           "lue:liveupdate" => "yes",
+    );
+
+    # check current version
+    if ( !defined $check_lue_version ) {
+
+        print "\n>>zLUe> Checking $lue_view LUE of '$jname' system.\n\n";
+
+        %zfs_properties = (%zfs_properties,
+                           "lue:status" => "current",
+                           "canmount" => "on",
+        );
+
+        # check if mounted
+        $fs = get_sth_df("fs4mp",$root_mp,undef);
+        if ( defined $fs ) {
+            $fs_mp = get_list_fs_mp_with_properties($fs,\%zfs_properties,"fs",$Val::zfs_ps);
+        }
+
+        # define for only mounted fs
+        if ( defined $fs && exists($$fs_mp{$fs}) ) {
+
+            $lue_version = zfs_get($fs,"lue:version",$Val::zfs_ps);
+            $lue_scheme = zfs_get($fs,"lue:scheme",$Val::zfs_ps);
+            $lue_status = "current";
+            $lue_creation = zfs_get($fs,"creation",undef);
+
+        } else {
+            $lue_version = "firstly";
+        }
+
+        print "\tlue ready version = '$lue_version'\n";
+        print "\tlue status        = '$lue_status'\n";
+        print "\tjail name         = '$jname'\n";
+        print "\tjail scheme       = '$lue_scheme'\n";
+        print "\tparent filesystem = '$parent_fs'\n";
+        print "\troot filesystem   = '$fs'\n";
+        print "\troot mountpoint   = '$root_mp'\n";
+        print "\tcreated           = '$lue_creation'\n\n";
+
+    # check specified version
+    } else {
+
+        print "\n>>zLUe> Checking $lue_view LUE of the '$check_lue_version' version of the '$jname' system.\n\n";
+
+        %zfs_properties = (%zfs_properties,
+                           "lue:version" => "$check_lue_version",
+        );
+
+        $fs_mp = get_list_fs_mp_with_properties($parent_fs,\%zfs_properties,"fs",$Val::zfs_ps);
+
+        # found root fs of specified version
+        if ( scalar ( keys %$fs_mp ) == 1 ) {
+
+            $fs = (keys %$fs_mp)[0];
+            $lue_version = zfs_get($fs,"lue:version",$Val::zfs_ps);
+            $lue_scheme = zfs_get($fs,"lue:scheme",$Val::zfs_ps);
+            $lue_status = zfs_get($fs,"lue:status",$Val::zfs_ps);
+            $lue_creation = zfs_get($fs,"creation",undef);
+
+            print "\tlue check version = '$check_lue_version'\n";
+            print "\tlue status        = '$lue_status'\n";
+            print "\tjail name         = '$jname'\n";
+            print "\tjail scheme       = '$lue_scheme'\n";
+            print "\tparent filesystem = '$parent_fs'\n";
+            print "\troot filesystem   = '$fs'\n";
+            print "\troot mountpoint   = '$root_mp'\n";
+            print "\tcreated           = '$lue_creation'\n\n";
+
+        # found more then one root fs of specified version
+        } elsif ( scalar ( keys %$fs_mp ) > 1 ) {
+            print "\n\n\tCONFLICT: Found more then one root filesystem of the same version:" . join(",",keys %$fs_mp). ".\n\n";
+
+        # do not found any root fs of specified version
+        } else {
+            print "\nWarning: The LUEnvironment of '$check_lue_version' version has not been found.\n";
+
+        }
+
+    }
+
+
+    return ($lue_version,$lue_scheme);
+
+}
+
+
+
+# create_new_lue($root_fs, $scheme, $lue_type, $lue_new_version)
+# - create new LiveUpdate environment for $lue_type (system/software) update
+#  $lue_cur_version - current version of LUE
+#  $lue_new_version - new version of LUE
+#  $lue_type - specified type of update
+
+sub create_new_lue {
+
+    my ($root_fs, $jname, $lue_type, $lue_new_version) = @_;
+
+    my @cmd;
+    my $scheme;
+    my ($cur_fs, $new_fs, $cur_mp, $new_mp, $scheme_mp);
+    my (%cur_zfs_properties, %new_zfs_properties);
+    my (%non_updateable_zfs_properties, %non_lue_zfs_properties, %late_zfs_properties);
+    my ($lue_status, $lue_cur_version);
+    my $non_updateable_fsn_exists;
+    my %processed_mp_fs;
+
+    my $it_is_custom_jail = "no";
+    if ( $jname ne "base" && $jname ne "master" ) {
+        $it_is_custom_jail = "yes";
+    }
+
+    my ($root_mp, $chroot_mp);
+    if ( $jname eq "base" ) {
+
+        $root_mp = "/";
+
+    } else {
+
+        $root_mp = "/$Conf::jbase_fs_mp/$jname";
+        $root_fs = "$root_fs/$jname";
+
+    }
+
+    print ">>zLUe> Check system is ready for live update...\n";
+    ($lue_cur_version, $scheme) = check_lue_ready($root_fs,$root_mp,$jname,undef,"current");
+
+    # LUE does not exist
+    if ( $lue_cur_version eq "firstly" || $lue_cur_version eq "nolue" ) {
+
+        if ( $lue_cur_version eq "firstly" ) {
+            print "\tSystem is not ready for LiveUpdate. Create the first LUEnvironment.\n";
+        } elsif ( $lue_cur_version eq "nolue" ) {
+            print "\n\tFound live system of 'nolue' version.\n";
+            print "\tBut the system is not ready for LiveUpdate. Create the first LUEnvironment.\n";
+        }
+
+        print "\n>>zLUe> After transformation filesystems you must reboot after 'init' without some updates.\n";
+        check_yesno("Continue","Y/N","Y");
+
+        $lue_cur_version = "nolue";
+
+        # select 'scheme' of LUE
+        # for 'base' system
+        if ( $jname eq "base" ) {
+            $scheme = $jname;
+
+        # for 'jail' system
+        } else {
+
+            if ( ! exists($Conf::fs_scheme{$jname}) ) {
+                $scheme = "master";
+            } else {
+                $scheme = $jname;
+            }
+
+        }
+
+        # ?
+        print "\t=> '$scheme' scheme has been selected.\n";
+        if ( ! exists($Conf::fs_scheme{$scheme}) ) {
+            print "\n\tWARNING: The '$scheme' scheme does not exist, exit.\n";
+            exit;
+        }
+
+        # create jail if it does not exist,
+        # else transform it to new scheme
+        #if ( $jname ne "base" && !defined zfs_get($root_fs,"type",undef) eq "filesystem" ) {
+        if ( $jname ne "base" && !defined zfs_get($root_fs,"type",undef) ) {
+
+            create_jail($jname,$scheme,$lue_new_version);
+            #return ($lue_cur_version,$root_mp);
+
+        }
+
+    # LUE has already existed 
+    } else {
+
+        print "\n\tThe system is ready for LiveUpdate.\n";
+
+        print "\t=> '$scheme' is working scheme.\n";
+
+        # check 'scheme' of LUE
+        # for 'base' system
+        if ( $jname eq "base" && $scheme ne "base" ) {
+
+            print "\tThe '$scheme' scheme does not match with '$jname' jail name.\n";
+            exit;
+
+        # for 'jail' system
+        } else {
+
+            # this situation can be caused by coping an original jail with own scheme to another jail 
+            # and then this jail is updated with scheme of original jail
+            if ( $scheme ne $jname && $scheme ne "master" ) {
+
+                print "\n\tWARNING: The '$scheme' scheme is inconsistent with '$jname' jail name !!!\n";
+                print "\t         This situation can be caused by coping an original jail with own scheme to another jail\n";
+                print "\t         and then this jail is updated with scheme of original jail.\n";
+                print "\t         Remember that some changes of this scheme cause corresponding changes of this jail during update.\n";
+                check_yesno("Continue","Y/N","Y");
+
+            }
+
+        }
+
+        if ( ! exists($Conf::fs_scheme{$scheme}) ) {
+            print "\n\tWARNING: The '$scheme' scheme does not exist, exit.\n";
+            exit;
+        }
+
+    }
+
+    # chroot mountpoint
+    if ( $jname eq "base" ) {
+        $chroot_mp = "$Conf::tmp_fsh/$Conf::fs_scheme{$scheme}{'/'}{'fsn'}.$lue_new_version";
+
+    } else {
+        $chroot_mp = "$root_mp$Conf::tmp_fsh/$Conf::fs_scheme{$scheme}{'/'}{'fsn'}.$lue_new_version";
+
+    }
+
+    # get hash of mountpoint=>fs over $root_fs
+    my $mp_fs = get_list_mp_mountedfs($root_fs);
+
+    my ($mp, $fs, $computed_scheme_mp, $new_name_fs);
+    my ($lue_type_fs, $lue_fs_updateable, $type4dir);
+    my ($create_ability, $ascending_fs_is_clone, $cur_mp_bu);
+
+
+    foreach $scheme_mp ( sort {$a cmp $b}  keys %{$Conf::fs_scheme{$scheme}} ) {
+
+        $lue_fs_updateable = $Conf::fs_scheme{$scheme}{$scheme_mp}{'lue'};
+        $lue_type_fs = $Conf::fs_scheme{$scheme}{$scheme_mp}{'type'};
+
+        # if LiveUpdate is made firstly, then we must make whole scheme ( all type of fs )
+        if ( $lue_cur_version ne "nolue" ) {
+
+            # else skip 'none' lue_type_fs
+            next if ( $lue_type_fs eq "none" );
+
+            # if lue type is 'system', then skip 'soft'
+            # if lue type is 'soft', then get both 'soft' and 'system'
+            next if ( $lue_type eq "system" && $lue_type_fs eq "soft" );
+
+        }
+
+
+        # if fs is updateable, then its name is added ".version" to,
+        # else:
+        #    if fs is non-updateble, then its name is not added ".version" to. 
+        #    however, if fs with same name already exists, its name is also added ".version" to.
+        if ( $lue_fs_updateable eq "yes" ) {
+
+            $new_fs = "$root_fs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}.$lue_new_version";
+
+        } else {
+
+            $new_fs = "$root_fs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}";
+            $non_updateable_fsn_exists = 0;
+            # if fs already exists
+            if ( zfs_get($new_fs,"type",undef) eq "filesystem" ) {
+                $new_fs = "$root_fs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}.$lue_new_version";
+                $non_updateable_fsn_exists = 1;
+            }
+
+        }
+
+        # define $cur_mp/$new_mp
+        $cur_mp = compute_mp($scheme,$root_mp,$scheme_mp,"current");
+        $new_mp = compute_mp($scheme,$chroot_mp,$scheme_mp,"new");
+
+
+        %cur_zfs_properties = (
+                               "lue:mountpoint" => "$scheme_mp",
+                               "lue:type" => "$lue_type_fs",
+                               "lue:liveupdate" => "$lue_fs_updateable",
+                               "lue:scheme" => "$scheme",
+                               "lue:jname" => "$jname",
+                               "lue:version" => "$lue_cur_version",
+                               "lue:parent" => "none",
+                               "lue:status" => "current",
+                               "lue:candel" => "no",
+        );
+
+        %new_zfs_properties = (
+                               "mountpoint" => "$new_mp",
+                               "lue:mountpoint" => "$scheme_mp",
+                               "lue:type" => "$lue_type_fs",
+                               "lue:liveupdate" => "$lue_fs_updateable",
+                               "lue:scheme" => "$scheme",
+                               "lue:jname" => "$jname",
+                               "lue:version" => "$lue_new_version",
+                               "lue:parent" => "$lue_cur_version",
+                               "lue:status" => "update",
+                               "lue:candel" => "yes",
+        );
+
+        %non_updateable_zfs_properties = (
+                               "lue:mountpoint" => "$scheme_mp",
+                               "lue:type" => "$lue_type_fs",
+                               "lue:liveupdate" => "$lue_fs_updateable",
+                               "lue:scheme" => "$scheme",
+                               "lue:jname" => "$jname",
+                               "lue:version" => "$lue_cur_version,$lue_new_version",
+                               "lue:parent" => "none",
+                               "lue:status" => "current",
+                               "lue:candel" => "yes",
+        );
+
+        %late_zfs_properties = (
+                               "lue:type" => "late",
+                               "lue:liveupdate" => "no",
+                               "lue:scheme" => "$scheme",
+                               "lue:jname" => "$jname",
+                               "lue:status" => "update",
+                               "lue:candel" => "yes",
+        );
+
+        %non_lue_zfs_properties = (
+                               "lue:type" => "none",
+                               "lue:liveupdate" => "no",
+                               "lue:scheme" => "$scheme",
+                               "lue:jname" => "$jname",
+                               "lue:version" => "$lue_cur_version,$lue_new_version",
+                               "lue:status" => "current",
+                               "lue:candel" => "yes",
+        );
+
+        # If the mountpoint/fs exists, 
+        # then:
+        # - make a snapshot of the fs
+        # - clone of this snapshot with the mountpoint in new chroot environment
+        if ( exists($$mp_fs{$cur_mp}) ){
+
+            print "\n=> '$cur_mp' exists\n";
+
+            $cur_fs = $$mp_fs{$cur_mp};
+
+            # skip jail mp/fs if 'base' update ( in case zpool_base eq zpool_jail )
+            if ( $jname eq "base" && $cur_fs =~ /^$Conf::jbase_fs/ ) {
+                print "\t=> does not update '$cur_mp'('$cur_fs'): the part of jail LUEnvironment\n";
+                next;
+            }
+
+            unless ( "$Conf::fs_scheme{$scheme}{$scheme_mp}{'clone_only'}" eq "yes" && $it_is_custom_jail eq "yes" ) {
+
+                print "\n\t=> set zfs properties for update mode\n";
+                zfs_set($cur_fs,"lue:mode","update",$Val::zfs_ps);
+                zfs_sets($cur_fs,$Conf::fs_scheme{$scheme}{$scheme_mp}{'zps_um'},$Val::zfs_ps);
+
+            }
+
+            # For updateable members of LUE usually and 
+            # for non-updateable, if it is made firstly and fs name of the mp is no scheme fsn (to rename)
+            if ( $lue_fs_updateable eq "yes" || ( $lue_cur_version eq "nolue" && $non_updateable_fsn_exists == 0 ) ) {
+
+                print "\tupdating: $cur_fs -> $new_fs\n";
+
+                # 1. Make snapshot of filesystem
+                do_snapshot($cur_fs,"$lue_cur_version-$lue_new_version",undef,
+                           ("lue:reason=liveupdate","lue:version=$lue_new_version","lue:parent=$lue_cur_version"));
+
+                # if LiveUpdate of the $cur_fs is made firstly, then set corresponding properties 
+                $lue_status = zfs_get($cur_fs,"lue:status",$Val::zfs_ps);
+                if ( $lue_status ne "current" ) {
+                    print "\tsetting 'current' environment firstly:\n";
+                    zfs_sets($cur_fs,{%cur_zfs_properties},$Val::zfs_ps);
+                }
+
+                # 2. Make filesystem
+
+                # for custom jail 'clone_only' filesystem
+                if ( "$Conf::fs_scheme{$scheme}{$scheme_mp}{'clone_only'}" eq "yes" && $it_is_custom_jail eq "yes" ) {
+
+                    $cur_fs = "$Conf::master_jfs/$Conf::fs_scheme{'master'}{$scheme_mp}{'fsn'}.$lue_new_version";
+                    do_clone_fs("$cur_fs\@$lue_new_version",$new_fs,undef,{%new_zfs_properties,"lue:clone_only" => "yes"});
+
+                # if LiveUpdate of the system is made firstly and filesystem of '/' mountpoint is zpool/root_fs,
+                # then copy current '/' fs to new fs with the mountpoint in new chroot environment
+                } elsif ( $scheme_mp eq "/" && $cur_fs eq $root_fs ) {
+
+                    do_create_fs($new_fs,undef,{%new_zfs_properties});
+                    do_copy_fs_by_tar($scheme,$root_mp,$scheme_mp,$chroot_mp);
+
+                } else {
+
+                    do_clone_fs("$cur_fs\@$lue_cur_version-$lue_new_version",$new_fs,undef,{%new_zfs_properties});
+
+                    # if cur_fs has recursively descendent names of file systems, we should rename them to rollback.
+                    print "\n\t=> check recursively descendent filesystem names of $cur_fs.\n";
+
+                    foreach $mp ( sort {$a cmp $b}  keys %$mp_fs ) {
+
+                        $fs = $$mp_fs{$mp};
+
+                        debug(2,"fs:'$fs' mp:'$mp'");
+                        if ( $fs =~ /^$cur_fs\// && $fs !~ /^$cur_fs\/.*\// ) {
+
+                            $computed_scheme_mp = $mp;
+                            $computed_scheme_mp = (split(/$root_mp/,$mp))[1] if ( $jname ne "base" );
+                            debug(2,"computed_scheme_mp '$computed_scheme_mp'");
+
+                            # if fs is not defined in scheme, then it will be prepared
+                            if ( ! defined $Conf::fs_scheme{$scheme}{$computed_scheme_mp} ) {
+
+                                $new_name_fs = (split(/$cur_fs\//,$fs))[1];
+                                $new_name_fs = "$root_fs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}"."-"."$new_name_fs";
+
+                                print "\t==> prepare for late renaming $fs to $new_name_fs\n";
+                                zfs_sets($fs,{%late_zfs_properties,"lue:fsname" => "$new_name_fs"},$Val::zfs_ps);
+                                # to exclude from descending preparation
+                                $processed_mp_fs{$mp} = $fs;
+
+                            }
+
+                        }
+
+                    }
+
+                    # if mountpoint (cur_mp) of updateable fs has recursively descendent mountpoints,
+                    # we should add the current and new lue:version into their filesystem to rollback.
+                    print "\n\t=> check recursively descendent mountpoints of $cur_fs.\n";
+                    foreach $mp ( sort {$a cmp $b}  keys %$mp_fs ) {
+
+                        debug(2,"fs:'$fs' mp:'$mp'");
+                        next if ( exists $processed_mp_fs{$mp} );
+
+                        if ( $mp =~ /^$cur_mp\// && $mp !~ /^$cur_mp\/.*\// ) {
+
+                            $fs = $$mp_fs{$mp};
+
+                            $computed_scheme_mp = $mp;
+                            $computed_scheme_mp = (split(/$root_mp/,$mp))[1] if ( $jname ne "base" );
+                            debug(2,"computed_scheme_mp '$computed_scheme_mp'");
+
+                            # if fs is not defined in scheme, then it will be prepared
+                            if ( ! defined $Conf::fs_scheme{$scheme}{$computed_scheme_mp} || 
+                                           $Conf::fs_scheme{$scheme}{$computed_scheme_mp}{'type'} eq "none" ) {
+
+                                zfs_sets($fs,{%non_lue_zfs_properties},$Val::zfs_ps);
+                                # to exclude from descending preparation
+                                $processed_mp_fs{$mp} = $fs;
+
+                            }
+
+                        }
+
+                    }
+
+                }
+
+            # For non-updateable member of LUE
+            } else {
+
+                $new_fs = $cur_fs;
+                print "\t updating: $cur_fs -> snapshot for backup only, it is 'non-updateable' member of LUE.\n";
+                do_snapshot($cur_fs,"$lue_cur_version-$lue_new_version.bu",undef,
+                           ("lue:reason=backup","lue:version=$lue_new_version","lue:parent=$lue_cur_version"));
+
+                zfs_sets($cur_fs,{%non_updateable_zfs_properties},$Val::zfs_ps);
+                exec_sh("yes","$Util::mkdir $new_mp") if ( !stat("$new_mp"));
+                exec_sh("yes","$Util::mount -t nullfs $cur_mp $new_mp");
+
+            }
+
+
+        # If the mountpoint does not exist, 
+        # then: 
+        # 1. check ability
+        # 2. make filesystem 
+        } else {
+
+            print "\n=> '$cur_mp' mountpoint does not exist\n";
+            print "\tMoving '$cur_mp' to '$new_mp'.\n\tIt will take some time, please wait...\n";
+
+            # if fs is updateable, then its name is added ".version" to,
+            # else:
+            #    if fs is non-updateable, then its name is not added ".version" to,
+            #    however, if fs with same name already exists, its name is added ".version" to.
+            if ( $lue_fs_updateable eq "yes" ) {
+
+                $cur_fs = "$root_fs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}.$lue_cur_version";
+
+            } else {
+
+                $cur_fs = "$root_fs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}";
+                if ( zfs_get($new_fs,"type",undef) eq "filesystem" ) {
+                    $cur_fs = "$root_fs/$Conf::fs_scheme{$scheme}{$scheme_mp}{'fsn'}.$lue_cur_version";
+                }
+
+            }
+
+            # 1. Check ability: is ascending filesystem in new LUE mounted as real zfs
+            print "\tCheck ability of filesystem's creating:\n";
+
+            $create_ability = "no";
+            $ascending_fs_is_clone="no";
+
+            if ( stat("$new_mp") ) {
+
+                # define ascending filesystem
+                $type4dir = get_sth_df("type4dir",$new_mp,undef);
+                $mp = get_sth_df("mp4fs",$new_mp,undef);
+                $fs = get_sth_df("fs4dir",$new_mp,undef);
+
+                if ( $type4dir ne "zfs" ) {
+
+                    print "\n\n\t\t !!! WARNING !!!\n\n";
+                    print "\tAscending filesystem '$fs' with '$mp' mountpoint is not 'zfs' type, but '$type4dir'\n";
+                    print "\tand mounted from current LUE.\n";
+                    print "\tFurther creating of new filesystem will cause loss of data.\n";
+
+                } else {
+
+                    if ( zfs_get($fs,"origin",undef) ne "-" ) {
+                        print "\tAscending filesystem '$fs' with '$mp' mountpoint is 'zfs' type, but it's a clone.\n";
+                        $ascending_fs_is_clone = "yes";
+                    } else {
+                        print "\tAscending filesystem '$fs' with '$mp' mountpoint is 'zfs' type.\n";
+                    }
+
+
+                    $create_ability = "yes";
+                    print "Check ability: OK.\n"
+
+                }
+
+            } else {
+
+                # ???? what about clone
+                $create_ability = "yes";
+                print "Check ability: OK.\n"
+
+            }
+
+            # 2. Make filesystems
+            # For custom jail 'clone_only' filesystem
+            if ( "$Conf::fs_scheme{$scheme}{$scheme_mp}{'clone_only'}" eq "yes" && $it_is_custom_jail eq "yes" ) {
+
+                if ( $create_ability eq "yes" ) { 
+                
+                    do_rm_dir($new_mp);
+                    $cur_fs = "$Conf::master_jfs/$Conf::fs_scheme{'master'}{$scheme_mp}{'fsn'}.$lue_new_version";
+                    do_clone_fs("$cur_fs\@$lue_new_version",$new_fs,undef,{%new_zfs_properties,"lue:clone_only" => "yes"});
+
+                } else {
+
+                    print "\n\n\t\t !!! CONFLICT !!!\n\n";
+                    print "\tConflict: new filesystem cannot be created, because of it is marked as 'clone_only' !\n";
+                    print "\tFix it in scheme configuration and begin process again.\n";
+
+                }
+
+            # For other filesystems
+            } else {
+    
+                # if ability is no problem,
+                # then 
+                #      for updateable members of LUE only or 
+                #      if 'firstly' then for all members of configuration:
+                # - delete directory in new chroot environment,
+                # - create new filesystem with this new mountpoint and copy content from current environment
+                #   and with new lue version
+                if ( $create_ability eq "yes" && ( $lue_fs_updateable eq "yes" || $lue_cur_version eq "nolue" ) ) { 
+
+                    do_rm_dir($new_mp) if ( $ascending_fs_is_clone eq "no" );
+                    do_create_fs($new_fs,undef,{%new_zfs_properties});
+                    do_copy_fs_by_tar($scheme,$root_mp,$scheme_mp,$chroot_mp);
+
+                # for other cases
+                # - move the directory to backup place
+                # - create new filesystem with this current mountpoint and copy content from backup
+                # - for updateable fs
+                #   - clone this filesystem with new mountpoint and new lue version
+                # - for non-updateable fs
+                #   - make a snapshot for backup and set lue parameters
+                #   - mount into chroot environment as nullfs
+                } else {
+
+                    # if it is not made firstly
+                    if ( $lue_cur_version ne "nolue" ) {
+
+                        print "\n>>zLUe> Creating filesystem with this utility is no good idea.\n";
+                        print "\tYou should create '$cur_fs' fs with '$cur_mp' mp before you had added it into configuration.\n";
+                        print "\tHowever...\n";
+
+                    }
+
+                    print "\n>>zLUe> You can create new filesystem:\n";
+                    print "\t\t- 'Y' - right now in current LUE and clone it into new LUE\n";
+                    print "\t\t        !!! possibly some services should be stopped within this period of time, !!!\n";
+                    print "\t\t        !!! because of its opened files !!!\n\n";
+                    print "\t\t- 'S' - late and skip this stage\n";
+                    print "\t\t- 'N' - or exit and create it manually, then begin process again.\n";
+
+                    if ( check_yesno("","Y/N/S","") ) {
+
+                        # Create filesystem in current LUE if ascending fs is not clone
+                        if ( $ascending_fs_is_clone eq "no" ) {
+
+                            $cur_mp_bu = "$cur_mp.bu".rand;
+                            exec_sh("yes","$Util::mv $cur_mp $cur_mp_bu");
+
+                            do_create_fs($cur_fs,undef,{%cur_zfs_properties,"mountpoint" => "$cur_mp"});
+                            do_copy_dir_by_tar("$cur_mp_bu",$cur_mp);
+
+                            # For updateable members of LUE
+                            if ( $lue_fs_updateable eq "yes" ) {
+
+                                do_snapshot($cur_fs,"$lue_cur_version-$lue_new_version",undef,
+                                           ("lue:reason=liveupdate","lue:version=$lue_new_version","lue:parent=$lue_cur_version"));
+                                do_clone_fs("$cur_fs\@$lue_cur_version-$lue_new_version",$new_fs,undef,{%new_zfs_properties});
+
+                            # For non-updateable member of LUE
+                            } else {
+
+                                $new_fs = $cur_fs;
+                                print "\t updating: $cur_fs -> snapshot for backup only, it is 'non-updateable' member of LUE.\n";
+                                do_snapshot($cur_fs,"$lue_cur_version-$lue_new_version.bu",undef,
+                                           ("lue:reason=backup","lue:version=$lue_new_version","lue:parent=$lue_cur_version"));
+                                zfs_sets($cur_fs,{%non_updateable_zfs_properties},$Val::zfs_ps);
+
+                                exec_sh("yes","$Util::mkdir $new_mp") if ( !stat("$new_mp"));
+                                exec_sh("yes","$Util::mount -t nullfs $cur_mp $new_mp");
+
+                            }
+
+                        # Create filesystem in new LUE if ascending fs is clone
+                        } else {
+                            do_create_fs($new_fs,undef,{%new_zfs_properties,"mountpoint" => "$new_mp"});
+                            do_copy_dir_by_tar($cur_mp,$new_mp);
+                        }
+
+                    # if skip
+                    } else {
+
+                        next;
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        unless ( "$Conf::fs_scheme{$scheme}{$scheme_mp}{'clone_only'}" eq "yes" && $it_is_custom_jail eq "yes" ) {
+
+            print "\n\t=> set zfs properties for update mode\n";
+            zfs_set($new_fs,"lue:mode","update",$Val::zfs_ps);
+            zfs_sets($new_fs,$Conf::fs_scheme{$scheme}{$scheme_mp}{'zps_um'},$Val::zfs_ps);
+
+        }
+
+        # to exclude from descending preparation
+        $processed_mp_fs{$cur_mp} = $cur_fs
+
+    }
+
+    # mark the rest of current lue environment with new version to init
+    # lue:status=current
+    print "\n=> update version of the rest of LUEnvironment\n";
+    foreach $mp ( sort {$a cmp $b}  keys %$mp_fs ) {
+
+        # skip processed mp
+        next if ( exists $processed_mp_fs{$mp} );
+        $fs = $$mp_fs{$mp};
+
+        # skip jail mp if 'base' update ( in case zpool_base eq zpool_jail )
+        if ( $jname eq "base" && $fs =~ /^$Conf::jbase_fs/ ) {
+            print "\t=> does not update version of '$mp': the part of jail LUEnvironment\n";
+            next;
+        }
+
+        print "\t=> update version of '$mp'\n";
+        if ( zfs_get($fs,"lue:status",$Val::zfs_ps) eq "current" ) {
+            zfs_sets($fs,{"lue:version" => "$lue_new_version"},$Val::zfs_ps);
+        }
+
+    }
+
+    # replace root mount fs for 'base' system
+    if ( $jname eq "base" ) {
+        replace_in_file("$chroot_mp/boot/loader.conf","vfs.root.mountfrom",
+                        "vfs.root.mountfrom=\"zfs:$root_fs/$Conf::fs_scheme{$scheme}{'/'}{'fsn'}.$lue_new_version\"");
+    }
+
+
+    # mount devfs
+    exec_sh("yes","$Util::mkdir $chroot_mp/dev") if ( !stat("$chroot_mp/dev"));
+    exec_sh("yes","$Util::mount -t devfs devfs $chroot_mp/dev");
+
+    return ($lue_cur_version,$chroot_mp);
+
+}
+
+# init new LUE/rollback/check
+# $lue_type - type of LUE: 'system','soft' and 'all'
+#             'all' (recommend):system, soft, none
+# $function: init,rollback,check,mount
+sub init_new_lue {
+
+    my ($root_fs, $jname, $lue_type, $lue_new_version, $function) = @_;
+
+    my $scheme;
+    my ($cmd_str, @cmd);
+    my ($fs, $mp, $scheme_mp, $new_mp);
+    my ($lue_status, $lue_cur_version, $lue_type_computed, $lue_consistency);
+    my $em_rollback_file;
+
+    my ($cur_bootfs, $new_bootfs);
+    my (%cur_zfs_properties, %new_zfs_properties);
+    my (%late_zfs_properties, %new_postlate_zfs_properties, %old_postlate_zfs_properties);
+    my $all_new_fs_mp;
+    my %processed_fs_mp;
+    my ($root_mp, $chroot_mp);
+
+    if ( $jname eq "base" ) {
+        $root_mp = "/";
+
+    } else {
+        $root_mp = "/$Conf::jbase_fs_mp/$jname";
+        $root_fs = "$root_fs/$jname";
+
+    }
+
+    # check being ready current lue
+    ($lue_cur_version,$scheme) = check_lue_ready($root_fs,$root_mp,$jname,undef,"current");
+
+    $em_rollback_file = "$Val::emergency_script" . "_" . "$lue_type" . "_" . "$lue_new_version" . "_to_" . "$lue_cur_version" . ".sh";
+
+    if ( $jname eq "base" ) {
+        $chroot_mp = "$Conf::tmp_fsh/$Conf::fs_scheme{$scheme}{'/'}{'fsn'}.$lue_new_version";
+
+    } else {
+        $chroot_mp = "$root_mp$Conf::tmp_fsh/$Conf::fs_scheme{$scheme}{'/'}{'fsn'}.$lue_new_version";
+
+    }
+
+    if ( ! exists($Conf::fs_scheme{$scheme}) ) {
+        print "\n\tWARNING: The '$scheme' scheme does not exist, exit.\n";
+        exit;
+    }
+
+
+    if ( $lue_cur_version eq "firstly" ) {
+
+        print "\tThe system is not ready for LiveUpdate. Firstly you must create the first LUEnvironment.\n";
+        exit;
+
+    } elsif ( $lue_cur_version eq "nolue" ) {
+
+        print "\n\tFound live system of 'nolue' version.\n";
+        if ( $function eq "init" ) {
+            print "\n>>zLUe> After init transformating filesystems you must reboot '$jname' system without some updates.\n";
+        }
+        sleep 5;
+
+    } else {
+
+        print "\n\tThe system is ready for LiveUpdate.\n";
+
+    }
+
+
+    # type of init/rollback/update
+    # if lue_type is "all", then this creteria is not used, i.e. system,soft,none fss is selected
+    if ( $lue_type eq "all" ) {
+        $lue_type_computed = undef;
+
+    } elsif ( $lue_type eq "system" ) {
+        $lue_type_computed = "system";
+
+    } elsif ( $lue_type eq "soft" ) {
+        $lue_type_computed = "system|soft";
+
+    }
+
+    # CURRENT ENV
+    %cur_zfs_properties = (
+                           "lue:type" => "$lue_type_computed",
+                           "lue:scheme" => "$scheme",
+                           "lue:jname" => "$jname",
+                           "lue:status" => "current",
+                           "lue:version" => "!$lue_new_version",
+    );
+
+    print "\tCollecting information of current LUE...\n";
+    my $cur_fs_mp = get_list_fs_mp_with_properties($root_fs,\%cur_zfs_properties,"fs",$Val::zfs_ps);
+
+    my %cur_mp_fs = reverse %$cur_fs_mp;
+    my @list_cur_fs = values %cur_mp_fs;
+
+    # define current bootfs
+    $cur_bootfs = get_fs_with_properties({"lue:mountpoint"=>"/"},\@list_cur_fs,$Val::zfs_ps);
+    if ( defined $cur_bootfs ) {
+        print "\t=> The current bootfs is '$cur_bootfs'.\n";
+
+    } else {
+        die "WARNING: current bootfs has not been defined !\n";
+
+    }
+
+
+    # NEW ENV
+    if ( $function eq "init" ) {
+        $lue_status = "update";
+
+    } elsif ( $function eq "rollback" ) {
+        $lue_status = "outdate";
+
+    }
+
+    %new_zfs_properties = (
+                           "lue:type" => "$lue_type_computed",
+                           "lue:status" => "$lue_status",
+                           "lue:scheme" => "$scheme",
+                           "lue:jname" => "$jname",
+                           "lue:version" => "$lue_new_version"
+    );
+
+    print "\tCollecting information of new LUE...\n";
+    my $new_fs_mp = get_list_fs_mp_with_properties($root_fs,\%new_zfs_properties,"fs",$Val::zfs_ps);
+
+    my %new_mp_fs = reverse %$new_fs_mp;
+    my @list_new_fs = values %new_mp_fs;
+ 
+    # define new bootfs
+    $new_bootfs = get_fs_with_properties({"lue:mountpoint" => "/"},\@list_new_fs,$Val::zfs_ps);
+    if ( defined $new_bootfs ) {
+        print "\t=> The new bootfs is '$new_bootfs'.\n";
+    } else {
+        die "WARNING: new bootfs has not been defined !\n";
+    }
+
+    # LATE ENV
+    %new_postlate_zfs_properties = (
+                            "lue:type" => "none",
+                            "lue:liveupdate" => "no",
+                            "lue:scheme" => "$scheme",
+                            "lue:jname" => "$jname",
+                            "lue:version" => "$lue_new_version",
+                            "lue:status" => "current",
+                            "lue:candel" => "yes",
+                            "canmount" => "on",
+    );
+
+    %old_postlate_zfs_properties = (
+                            "lue:type" => "none",
+                            "lue:liveupdate" => "no",
+                            "lue:scheme" => "$scheme",
+                            "lue:jname" => "$jname",
+                            "lue:version" => "$lue_cur_version",
+                            "lue:status" => "outdate",
+                            "lue:candel" => "yes",
+                            "canmount" => "noauto",
+    );
+
+    %late_zfs_properties = (
+                            "lue:type"=>"late",
+                            "lue:scheme"=>"$scheme",
+                            "lue:jname" => "$jname",
+                            "lue:status" => "update"
+    );
+
+    my $late_fs_mp = get_list_fs_mp_with_properties($root_fs,\%late_zfs_properties,"fs",$Val::zfs_ps);
+    my @list_late_fs = keys %$late_fs_mp;
+    my $new_late_fs;
+
+
+    if ( scalar @list_new_fs > 0 ) {
+
+        if ( $function ne "rollback" ) {
+
+            # check being ready new lue
+            # check scheme of mountpoint <-> filesystem
+            $all_new_fs_mp = get_list_fs_mp_with_properties($root_fs,
+                                 {"lue:jname" => "$jname",
+                                  "lue:version" => "$lue_new_version",
+                                  "lue:type" => "$lue_type_computed"},"fs",$Val::zfs_ps);
+            $lue_consistency = check_consistency($jname,$lue_new_version,$scheme,$all_new_fs_mp,$lue_type,$chroot_mp,$function,"new");
+
+        }
+
+        # return if check function only
+        if ( $function eq "check" || $function eq "mount" ) {
+            if ( $lue_consistency == 0 ) {
+                return ($lue_cur_version,$chroot_mp);
+            } else {
+                return;
+            }
+        }
+
+
+        # if LUE is consistent with scheme or executing 'rollback' function
+        if ( $lue_consistency == 0 || $function eq "rollback" ) {
+
+            if ( $function eq "init" ) {
+                print "\n\tUpdating from '$lue_cur_version' to '$lue_new_version' version...\n";
+
+            } elsif ( $function eq "rollback" ) {
+                print "\n\tRollback from '$lue_cur_version' to '$lue_new_version' version...\n";
+
+            }
+
+            # create emergency shell script
+            if ( $jname eq "base" && check_yesno("Create emergency LiveUpdate shell script /$em_rollback_file to rollback.","Y/N/S","Y") ) {
+
+                @cmd = ("#!/bin/sh\n",
+                        "echo \"Switch off LUEnvironment of '$lue_new_version' version.\"\n");
+
+                foreach $fs ( @list_new_fs ) {
+
+                    $cmd_str = "$Util::zfs set canmount=noauto $fs";
+                    @cmd = (@cmd,"echo \"$cmd_str\"\n $cmd_str\n");
+
+                    $cmd_str = "$Util::zfs set lue:status=outdate $fs";
+                    @cmd = (@cmd,"echo \"$cmd_str\"\n $cmd_str\n");
+
+                }
+
+                @cmd = (@cmd,"echo \"Switch on LUEnvironment of '$lue_cur_version' version.\"\n");
+                foreach $fs ( @list_cur_fs ) {
+
+                    $cmd_str = "$Util::zfs set canmount=on $fs";
+                    @cmd = (@cmd,"echo \"$cmd_str\"\n $cmd_str\n");
+
+                    $cmd_str = "$Util::zfs set lue:status=current $fs";
+                    @cmd = (@cmd,"echo \"$cmd_str\"\n $cmd_str\n");
+
+                    $cmd_str = "$Util::zfs promote $fs";
+                    @cmd = (@cmd,"echo \"$cmd_str\"\n $cmd_str\n");
+
+                }
+
+                @cmd = (@cmd,
+                        "echo \"Set root_fs of '$lue_cur_version' version as a bootfs.\"\n",
+                        "$Util::zpool set bootfs=$cur_bootfs $root_fs\n");
+
+                if ( !defined $Val::showonly ) {
+
+                    open (EM_SCRIPT,"+>/$em_rollback_file") || die "Can't open $em_rollback_file :$!";
+                    foreach $cmd_str ( @cmd ) { 
+                        print EM_SCRIPT $cmd_str;
+                    }
+                    close EM_SCRIPT;
+                    exec_sh("yes","$Util::chmod 700 /$em_rollback_file");
+            
+                    if ( $function eq "init" ) {
+                        exec_sh("yes","$Util::cp /$em_rollback_file $chroot_mp/$em_rollback_file");
+                    }
+
+                } else {
+
+                    foreach $cmd_str ( @cmd ) {
+                        print "to file: $cmd_str";
+                    }
+
+                }
+
+            }
+
+            # For 'jail' only
+            if ( $jname ne "base" && $lue_new_version eq "nolue" && $function eq "rollback" ) {
+                switch_over_jail_lue($jname,"stop",$lue_cur_version,$lue_new_version,$cur_bootfs,$root_fs);
+            }
+
+            # Switch on new environment.
+            if ( check_yesno("Switch on LUEnvironment of '$lue_new_version' version.","Y/N/S","Y") ) {
+
+                foreach $mp ( sort {$a cmp $b} keys (%new_mp_fs) )  {
+
+                    $fs = $new_mp_fs{$mp};
+                    print "\n=> setting '$mp' ($fs)\n";
+                    # umount fs in chroot env
+                    umount_recursively($fs,"byfs") if ( zfs_get($fs,"mounted",undef) eq "yes" ); 
+
+                    if ( ! defined zfs_get($fs,"mountpoint",$Val::zfs_ps) ) {
+                    }
+
+                    if ( $function eq "init" ) {
+
+                        # get new mountpoint
+                        $scheme_mp = zfs_get($fs,"lue:mountpoint",$Val::zfs_ps);
+                        $processed_fs_mp{$fs} = $scheme_mp;
+
+                        # define new_mp
+                        $new_mp = compute_mp($scheme,$root_mp,$scheme_mp,"current");
+
+                        zfs_sets($fs,{"mountpoint" => "$new_mp", "lue:status" => "current"},$Val::zfs_ps);
+
+                        # switch over to production mode 
+                        print "\t=> set zfs properties for production mode\n";
+                        zfs_set($fs,"lue:mode","production",$Val::zfs_ps);
+                        zfs_sets($fs,$Conf::fs_scheme{$scheme}{$scheme_mp}{'zps_pm'},$Val::zfs_ps);
+
+                    } else {
+
+                        zfs_sets($fs,{"canmount" => "on", "lue:status" => "current"},$Val::zfs_ps);
+
+                    }
+
+                    # promote, if mp does not have 'clone_only' property
+                    zfs_promote($fs) if ( zfs_get($fs,"lue:clone_only",$Val::zfs_ps) ne "yes" );
+
+                }
+
+                # rm a temp mountpoint of chroot fs
+                if ( $function eq "init" && ! defined get_sth_df("fs4mp","$chroot_mp",undef) ) {
+                    do_rm_dir($chroot_mp);
+                }
+
+            }
+
+            # Set 'production mode' of the rest of LUE
+            if ( $function eq "init" ) {
+
+                print "\n=> set zfs properties for production mode of the rest of LUEnvironment\n";
+                foreach $fs ( keys %$all_new_fs_mp ) {
+
+                    next if ( exists $processed_fs_mp{$fs} );
+                    $scheme_mp = zfs_get($fs,"lue:mountpoint",$Val::zfs_ps);
+
+                    if ( defined $Conf::fs_scheme{$scheme}{$scheme_mp} ) {
+
+                        print "\t=> set '$fs'\n";
+                        zfs_set($fs,"lue:mode","production",$Val::zfs_ps);
+                        zfs_sets($fs,$Conf::fs_scheme{$scheme}{$scheme_mp}{'zps_pm'},$Val::zfs_ps);
+
+                    }
+
+                }
+
+            }
+
+            # Switch on late environment
+            if ( scalar @list_late_fs > 0 && $function eq "init" ) {
+
+                if ( check_yesno("Switch on late environment.","Y/N/S","Y") ) {
+
+                    while ( ($fs,$mp) = each (%$late_fs_mp) )  {
+
+                        # create new late fs
+                        $new_late_fs = zfs_get($fs,"lue:fsname",$Val::zfs_ps);
+                        print "\n=> setting '$mp' ($fs -> $new_late_fs)\n";
+                        do_snapshot($fs,"$lue_cur_version-$lue_new_version",undef,
+                                   ("lue:reason=liveupdate4late","lue:version=$lue_new_version","lue:parent=$lue_cur_version"));
+                        do_clone_fs("$fs\@$lue_cur_version-$lue_new_version",$new_late_fs,undef,{"mountpoint" => "none"});
+
+                        # enable new late fs
+                        zfs_sets($new_late_fs,{%new_postlate_zfs_properties,"mountpoint" => "$mp"},$Val::zfs_ps);
+                        zfs_promote($new_late_fs);
+
+                        # disable current late fs
+                        zfs_sets($fs,{%old_postlate_zfs_properties},$Val::zfs_ps);
+
+                    }
+                }
+
+            }
+
+            # Switch off current environment.
+            if ( check_yesno("Switch off LUEnvironment of '$lue_cur_version' version.","Y/N/S","Y") ) {
+
+                foreach $mp ( sort {$a cmp $b} keys (%cur_mp_fs) )  {
+                    $fs = $cur_mp_fs{$mp};
+                    print "\n=> setting '$mp' ($fs)\n";
+                    zfs_sets($fs,{"canmount" => "noauto", "lue:status" => "outdate"},$Val::zfs_ps);
+                }
+            }
+
+            # final phase
+            print "\n>>zLUe> It's a final phase.\n";
+            # for 'base'
+            if ( $jname eq "base" ) {
+
+                # init new boot env
+                if ( check_yesno("Set root_fs of '$lue_new_version' version as a bootfs.","Y/N/S","Y") ) {
+                    zpool_set($root_fs,"bootfs",$new_bootfs);
+                }
+
+            # for 'jail' only
+            } else {
+
+
+                if ( $jname eq "master" && $function eq "init" ) {
+
+                    foreach $fs ( keys (%$all_new_fs_mp) )  {
+
+                        print "\n\t=> create 'install' snapshot of '$fs' for custom jails\n";
+                        do_snapshot($fs,"$lue_new_version",undef,
+                                   ("lue:reason=install","lue:version=$lue_new_version","lue:parent=$lue_cur_version"));
+
+                    }
+
+                }
+
+                if ( $lue_new_version eq "nolue" && $function eq "rollback" ) {
+                    switch_over_jail_lue($jname,"start",$lue_cur_version,$lue_new_version,$cur_bootfs,$root_fs);
+                } else {
+                    switch_over_jail_lue($jname,"usual",$lue_cur_version,$lue_new_version,$cur_bootfs,$root_fs);
+                }
+
+            }
+
+        # if LUE is inconsistent with scheme
+        } else {
+
+            return 1;
+
+        }
+
+    } else {
+
+        print "\nWarning: The LUEnvironment of '$lue_new_version' version at the update/outdate statement has not been found.\n";
+        return 1;
+
+    }
+
+    return 0;
+
+}
+
+
+# check consistency of current/new/any LUE
+# for current $root_mp = $root_mp
+# for new     $root_mp = $chroot_mp
+# $function: init, check, mount, undef
+# $lue_view : current, new (in chroot), specified
+sub check_consistency {
+
+    my ($jname,$lue_version,$scheme, $check_fs_mp, $lue_type, $root_mp, $function, $lue_view) = @_;
+
+    my ($scheme_mp, $check_mp, $real_mp, $computed_mp, $real_mp_null);
+    my (%sch_mp_fs, $check_fs, $real_fs, $real_fs_null);
+    my ($lue_fs_updateable, $lue_type_fs);
+    my $lue_consistency = 0;
+    my $exit_status = 0;
+
+
+    print "\n>>zLUe> Check consistency of $lue_view '$lue_version' LUEnvironment of '$jname' system  with '$scheme' LiveUpdate scheme.\n";
+
+    if ( scalar (keys %$check_fs_mp) == 0 ) {
+
+        print "\nWarning: The LUEnvironment with specified properties has not been found.\n";
+        $lue_consistency = 1;
+        return $lue_consistency;
+
+    }
+
+    # get scheme_mp of all fss in %$check_fs_mp
+    foreach $check_fs ( keys %$check_fs_mp ) {
+
+        $scheme_mp = zfs_get($check_fs,"lue:mountpoint",$Val::zfs_ps);
+        debug(2,"get_fs:'$check_fs'  >  mp:'$$check_fs_mp{$check_fs}'  >  sch_mp:'$scheme_mp'");
+
+        # check if scheme_mp has a duplicate
+        if ( exists $sch_mp_fs{$scheme_mp} ) {
+
+            print "CONFLICT: The '$scheme_mp' lue:mountpoint is in duplicate for $check_fs and $sch_mp_fs{$scheme_mp}\n";
+            $lue_consistency = 1;
+            return $lue_consistency;
+
+        }
+
+        $sch_mp_fs{$scheme_mp} = $check_fs;
+
+    }
+
+    foreach $scheme_mp ( sort {$a cmp $b}  keys %{$Conf::fs_scheme{$scheme}} ) {
+
+        debug(2,"=> 1: scheme_mp:'$scheme_mp'");
+        $lue_type_fs = $Conf::fs_scheme{$scheme}{$scheme_mp}{'type'};
+        $lue_fs_updateable = $Conf::fs_scheme{$scheme}{$scheme_mp}{'lue'};
+
+        if ( $lue_type ne "all" ) {
+
+            if ( ( $lue_type eq "system" && $lue_type_fs ne $lue_type ) || $lue_type_fs eq "none" ) {
+                next;
+            }
+
+            next if ( $lue_fs_updateable ne "yes" && $function ne "check" && $function ne "mount" );
+
+        }
+        debug(2,"=> 2: scheme_mp:'$scheme_mp' > scheme_fs:'$sch_mp_fs{$scheme_mp}'");
+
+        if ( exists $sch_mp_fs{$scheme_mp} ) {
+
+            # if $fs is mounted
+            if ( ( $function eq "check" || $function eq "mount" ) && $lue_type_fs ne "none" ) {
+
+                $check_fs = $sch_mp_fs{$scheme_mp};
+
+                # compute mountpoint
+                $computed_mp = compute_mp($scheme,$root_mp,$scheme_mp,$lue_view);
+
+                $real_fs = get_sth_df("fs4mp",$computed_mp,undef);
+                debug(2,"scheme_mp:'$scheme_mp > computed_mp:'$computed_mp' > real_fs:'$real_fs'");
+
+                if ( ! defined $real_fs ) {
+
+                    print "Warning: the computed mountpoint '$computed_mp' does not exist in $lue_view LUEnvironment.\n";
+
+                    if ( $function eq "check" ) {
+
+                            $lue_consistency++;
+
+                    } elsif ( $function eq "mount" ) {
+
+                        print "Try to mount... \n";
+                        if ( $lue_fs_updateable eq "yes" ) {
+                            $exit_status = mount_fs($check_fs,$computed_mp,"-t zfs");
+                            if ( $exit_status != 0 ) {
+                                print "Remount... \n";
+                                #umount_recursively($check_fs,"byfs");
+                                #umount_recursively($computed_mp,"bymp");
+                                exec_sh("yes","$Util::umount $check_fs");
+                                $exit_status = mount_fs($check_fs,$computed_mp,"-t zfs");
+                            }
+                        } else {
+                            $real_mp_null = compute_mp($scheme,$root_mp,$scheme_mp,"current");
+                            $exit_status = mount_fs($real_mp_null,$computed_mp,"-t nullfs");
+                        }
+                    
+                        if ( $exit_status == 0 ) {
+                            print "Ok!\n";
+                        } else {
+                            $lue_consistency++;
+                            print "Fault.\n";
+                        }
+                    }
+
+                } else {
+
+                    # perhaps the real_fs is nullfs
+                    if ( $real_fs ne $check_fs ) {
+
+                        # get null fs for computed mp and compare with real mp
+                        # example:
+                        # current LUE: zbase/var ($real_fs_null=$check_fs)   11910729     178 11910551     0%    /var ($real_mp)
+                        # new     LUE: /var      ($real_fs)                  11910729     178 11910551     0%    /zbase/tmp/aroot.03/var ($computed_mp)
+                        $real_mp = $real_fs;
+                        $real_fs_null = get_sth_df("fs4mp",$real_mp,undef);
+                        debug(2,"nullfs scheme_mp:'$scheme_mp > computed_mp:'$computed_mp' > real_fs_null:'$real_fs_null'");
+
+                        if ( $real_fs_null ne $check_fs ) {
+
+                            print "Warning: the computed mountpoint '$computed_mp' of '$real_fs' null-filesystem is inconsistent\n";
+                            print "         with real mountpoint '$real_mp' of '$check_fs'(ne '$real_fs_null') in $lue_view LUEnvironment.\n";
+                            if ( $function eq "check" ) {
+
+                                    $lue_consistency++;
+
+                            } elsif ( $function eq "mount" ) {
+
+                                print "Try to mount... \n";
+                                $exit_status = mount_fs($real_fs,$computed_mp,"-t nullfs");
+
+                                if ( $exit_status == 0 ) {
+                                    print "Ok!\n";
+                                } else {
+                                    $lue_consistency++;
+                                    print "Fault.\n";
+                                }
+
+                            }
+
+                        }
+
+                    }
+
+                }
+
+            }
+
+        } else {
+
+            print "Warning: the filesystem of '$scheme_mp' scheme mountpoint does not exist in $lue_view LUEnvironment.\n";
+            $lue_consistency++;
+
+        }
+
+    }
+
+    if ( $function eq "check" || $function eq "mount" ) {
+
+        $computed_mp = compute_mp($scheme,$root_mp,"/dev",$lue_view);
+        if ( ! defined get_sth_df("fs4mp",$computed_mp,"-t devfs") ) {
+
+            print "Warning: the '$computed_mp' mountpoint does not exist in $lue_view LUEnvironment.\n";
+            #print "         You should execute command 'mount -t devfs dev $computed_mp' to fix.\n";
+
+            if ( $function eq "check" ) {
+
+                    $lue_consistency++;
+
+            } elsif ( $function eq "mount" ) {
+
+                print "Try to mount... \n";
+                $exit_status = mount_fs("dev",$computed_mp,"-t devfs");
+
+                if ( $exit_status == 0 ) {
+                    print "Ok!\n";
+                } else {
+                    $lue_consistency++;
+                    print "Fault.\n";
+                }
+
+            }
+
+        }
+
+    }
+
+    if ( $lue_consistency != 0 ) {
+        print "\nWarning: the $lue_view LUEnvironment is inconsistent with '$scheme' LiveUpdate scheme.\n"; 
+        print "Try to mount LUE by 'zlue mount-env $jname $lue_version'.\n"; 
+    }
+
+    return $lue_consistency;
+
+}
+
+
+sub define_current_version {
+
+    my ($root_mp) = @_;
+
+    my $fs = get_sth_df("fs4mp",$root_mp,undef);
+    my $lue_version = zfs_get($fs,"lue:version",$Val::zfs_ps);
+
+    return $lue_version;
+
+}
+
+sub prepare_lue_for_soft_update {
+
+    my ($scheme, $root_mp, $chroot_mp, $mode) = @_;
+    my ($sch_mp, $sch_fs, $fs, $type, $lue);
+
+    if ( $mode eq "create" ) {    
+
+        foreach $sch_mp ( sort {$a cmp $b}  keys %{$Conf::fs_scheme{$scheme}} ) {
+
+            $type = $Conf::fs_scheme{$scheme}{$sch_mp}{'type'};
+            $lue = $Conf::fs_scheme{$scheme}{$sch_mp}{'lue'};
+            
+            if ( $type eq "system" || ( $type eq "soft" && $lue eq "no" ) ) {
+
+                if ( ! defined get_sth_df("fs4mp","$chroot_mp$sch_mp",undef) ) {
+
+                    print "\n=> '$chroot_mp$sch_mp' does not exist,\n\tmount '$root_mp$sch_mp' to '$chroot_mp$sch_mp'\n";
+                    $fs = get_sth_df("fs4mp","$root_mp$sch_mp",undef);
+
+                    print "\n\t=> set zfs properties for update mode\n";
+                    exec_sh("yes","$Util::mkdir $chroot_mp$sch_mp") if ( !stat("$chroot_mp$sch_mp"));
+                    exec_sh("yes","$Util::mount -t nullfs $root_mp$sch_mp $chroot_mp$sch_mp");
+                    zfs_set($fs,"lue:mode","update",$Val::zfs_ps);
+                    zfs_sets($fs,$Conf::fs_scheme{$scheme}{$sch_mp}{'zps_um'},$Val::zfs_ps);
+
+                } else {
+
+                    print "\n=> '$chroot_mp$sch_mp' exists\n";
+
+                }
+
+            }
+
+        }
+
+    } elsif ( $mode eq "init" ) {
+
+        foreach $sch_mp ( sort {$b cmp $a}  keys %{$Conf::fs_scheme{$scheme}} ) {
+
+            $type = $Conf::fs_scheme{$scheme}{$sch_mp}{'type'};
+            $lue = $Conf::fs_scheme{$scheme}{$sch_mp}{'lue'};
+
+            if ( $type eq "system" || ( $type eq "soft" && $lue eq "no" ) ) {
+
+                print "\n=> '$chroot_mp$sch_mp'\n";
+                if ( defined get_sth_df("fs4mp","$chroot_mp$sch_mp","-t nullfs") ) {
+
+                    print "\t=> umount\n";
+                    exec_sh("yes","$Util::umount $chroot_mp$sch_mp");
+
+                    print "\t=> set zfs properties for production mode\n";
+                    zfs_set($fs,"lue:mode","production",$Val::zfs_ps);
+                    zfs_sets($fs,$Conf::fs_scheme{$scheme}{$sch_mp}{'zps_pm'},$Val::zfs_ps);
+
+                }
+
+            }
+
+        }
+
+    }
+
+}
+
+sub init_ports_env {
+
+    my ($jname, $mode, $chroot_mp) = @_;
+
+    my ($dir_src, $dir_dst, $options);
+    my %dirs = ("/usr/src" => "-o ro",
+                "/usr/ports" => "",
+                "/usr/ports/distfiles" => "",
+               );
+
+    print "\n> preparing of ports...\n";
+
+    if ( $mode eq "production" ) {
+
+        foreach $dir_src ( sort {$b cmp $a}  keys %dirs ) {
+
+            if ( defined $chroot_mp ) {
+                $dir_dst = "$chroot_mp$dir_src";
+            } else {
+                $dir_dst = "/$Conf::jbase_fs_mp/$jname$dir_src";
+            }
+
+            if ( defined get_sth_df("fs4mp",$dir_dst,"-t nullfs") ) {
+                print "\t=> umount '$dir_dst'\n";
+                exec_sh("yes","$Util::umount $dir_dst");
+            }
+
+        }
+
+
+    } elsif ( $mode eq "update" ) {
+
+        foreach $dir_src ( sort {$a cmp $b}  keys %dirs ) {
+
+            $options = $dirs{$dir_src};
+            if ( defined $chroot_mp ) {
+                $dir_dst = "$chroot_mp$dir_src";
+            } else {
+                $dir_dst = "/$Conf::jbase_fs_mp/$jname$dir_src";
+            }
+
+            if ( defined get_sth_df("fs4mp",$dir_src,undef) && !defined get_sth_df("fs4mp",$dir_dst,"-t nullfs") ) {
+                print "\t=> mount '$dir_src' to '$dir_dst'\n";
+                exec_sh("yes","$Util::mount -t nullfs $options $dir_src $dir_dst");
+            }
+
+        }
+
+    }
+
+}
+
+sub upgrade_by_src_compiling {
+
+    my ($chroot, $update_type) = @_;
+
+    #my ($snapshot_version, $update_type) = @_;
+    #my $chroot = "$Conf::tmp_fsh/$Conf::fs_scheme{'base'}{'/'}{'fsn'}.$snapshot_version";
+
+    my @cmd; 
+    my $input_command;
+    my $tmp_dir = "tmp"; 
+    my $answer;
+
+    print "\n>>zLUe> You can update source:\n";
+    print "\t\t- '1' - with svn\n";
+    print "\t\t- '2' - with cvsup\n";
+
+    if ( $answer = check_yesno("","1/2/N/S",undef) ) {
+
+        if ( $answer == 1 ) {
+
+            exec_sh("yes","$Util::mount_nullfs /usr/local $chroot/usr/local") if ( $update_type eq "system" );
+
+            $input_command = "cd /usr/src && /usr/local/bin/svn info && /usr/local/bin/svn cleanup && /usr/local/bin/svn update /usr/src";
+            if ( $answer = check_yesno("","Y/A","Y",$input_command) ) { 
+                exec_chroot_sh($chroot,$tmp_dir,$answer);
+            }
+
+            exec_sh("yes","$Util::umount $chroot/usr/local") if ( $update_type eq "system" );
+
+        } elsif ( $answer == 2 ) {
+
+            $input_command = "cd /usr/src && /usr/bin/csup -L 2 /etc/csup.conf";
+            if ( $answer = check_yesno("","Y/A","Y",$input_command) ) { 
+                exec_chroot_sh($chroot,$tmp_dir,$answer);
+            }
+
+        }
+
+    }
+
+    exec_chroot_sh($chroot,$tmp_dir,"/usr/bin/more /usr/src/UPDATING");
+
+    $input_command = "cd /usr/src && /usr/bin/make $Conf::make_options buildworld";
+    if ( $answer = check_yesno("Start to build world","Y/A/N/S","Y",$input_command) ) {
+        exec_chroot_sh($chroot,$tmp_dir,$answer);
+    }
+
+    $input_command = "cd /usr/src && /usr/bin/make $Conf::make_options buildkernel";
+    if ( $answer = check_yesno("Start to build kernel","Y/A/N/S","Y",$input_command) ) {
+        exec_chroot_sh($chroot,$tmp_dir,$answer);
+    }
+
+    $input_command = "cd /usr/src && /usr/bin/make installkernel";
+    if ( $answer = check_yesno("Start to install kernel","Y/A/N/S","Y",$input_command) ) {
+        exec_chroot_sh($chroot,$tmp_dir,$answer);
+    }
+
+    $input_command = "cd /usr/src && /usr/sbin/mergemaster -p";
+    if ( $answer = check_yesno("Start to mergemaster -p","Y/A/N/S","Y",$input_command) ) {
+        exec_chroot_sh($chroot,$tmp_dir,$answer);
+    }
+
+    $input_command = "cd /usr/src && /usr/bin/make installworld";
+    if ( $answer = check_yesno("Start to install world","Y/A/N/S","Y",$input_command) ) {
+        exec_chroot_sh($chroot,$tmp_dir,$answer);
+        exec_chroot_sh($chroot,$tmp_dir,"cd /usr/src && /usr/bin/make check-old");
+    }
+
+    $input_command = "cd /usr/src && /usr/bin/make delete-old";
+    if ( $answer = check_yesno("Start to make delete-old","Y/A/N/S","Y",$input_command) ) {
+        exec_chroot_sh($chroot,$tmp_dir,$answer);
+    }
+
+    $input_command = "cd /usr/src && /usr/sbin/mergemaster -i -F";
+    if ( $answer = check_yesno("Start to mergemaster","Y/A/N/S","Y",$input_command) ) {
+        exec_chroot_sh($chroot,$tmp_dir,$answer);
+    }
+
+}
+
+sub install_system_to_master_jail {
+
+    my ($new_jmp) = @_;
+
+    my @cmd;
+
+    if ( check_yesno("Start to install world to '$new_jmp'","Y/N/S","Y") ) {
+
+        # something of base system to 'update' mode
+        switch_over_base_for_master("update");
+
+
+        chdir ("/usr/src") && print "\t cd /usr/src\n";
+        @cmd = (
+                "/usr/bin/make installworld DESTDIR=$new_jmp",
+                "/usr/bin/make distribution DESTDIR=$new_jmp"
+        );
+        exec_sh("yes",@cmd);
+
+        check_yesno("Start mergemaster","Y/N","Y");
+
+        @cmd = (
+                "/usr/sbin/mergemaster -t $new_jmp/var/tmp/temproot -D $new_jmp",
+                "/bin/cp -p /etc/localtime $new_jmp/etc/",
+                "/bin/cp -p /etc/resolv.conf $new_jmp/etc/",
+                "/usr/bin/touch $new_jmp/etc/fstab",
+                "/bin/ln -s /usr/local/bin/perl $new_jmp/usr/bin/perl",
+                "/bin/mkdir -p $new_jmp/usr/ports/distfiles",
+        );
+        exec_sh("yes",@cmd);
+
+        print "\n=> Edit $new_jmp/etc/rc.conf...\n";
+        if ( !defined $Val::showonly ) {
+
+            open (RC_CONF,">$new_jmp/etc/rc.conf") || die "Can't open $new_jmp/etc/rc.conf:$!";
+            print RC_CONF << "TEXT";
+
+network_interfaces=""
+
+rpcbind_enable="NO"
+cron_flags="\$cron_flags -J 15"
+syslogd_flags="-ss"
+sshd_enable="YES"
+
+sendmail_enable="NO"
+sendmail_submit_enable="NO"
+sendmail_outbound_enable="NO"
+sendmail_msp_queue_enable="NO"
+TEXT
+
+            close RC_CONF;
+
+        }
+
+        # something of base system to 'production' mode
+        switch_over_base_for_master("production");
+
+    }
+
+}
+
+sub upgrade_system_master_jail {
+
+    my ($destdir) = @_;
+
+    my @cmd;
+
+    chdir ("/usr/src") && print "\t=> cd /usr/src\n";
+
+    switch_over_base_for_master("update");
+
+    if ( check_yesno("Start to install world to $destdir","Y/N/S","Y") ) {
+
+        @cmd = (
+                "/usr/bin/make installworld DESTDIR=$destdir",
+                "/usr/bin/make check-old DESTDIR=$destdir",
+                "/usr/bin/make delete-old DESTDIR=$destdir"
+        );
+        exec_sh("yes",@cmd);
+    }
+
+    if ( check_yesno("Start to mergemaster","Y/N/S","Y") ) {
+
+        @cmd = (
+                "/usr/sbin/mergemaster -t $destdir/var/tmp/temproot -D $destdir",
+        );
+        exec_sh("yes",@cmd);
+    }
+
+    switch_over_base_for_master("production");
+
+}
+
+sub switch_over_base_for_master {
+
+    my ($function) = @_;
+
+    my ($base_tmp,$base_obj);
+
+    $base_tmp = get_sth_df("fs4mp","/tmp",undef);
+    $base_obj = get_sth_df("fs4mp","/usr/obj",undef);
+
+    if ( $function eq "update" ) {
+
+        if ( defined $base_tmp ) {
+            zfs_set($base_tmp,"lue:mode","update",$Val::zfs_ps);
+            zfs_sets($base_tmp,$Conf::fs_scheme{'base'}{'/tmp'}{'zps_um'},$Val::zfs_ps);
+        }
+
+        if ( defined $base_obj ) {
+            zfs_set($base_obj,"lue:mode","update",$Val::zfs_ps);
+            zfs_sets($base_obj,$Conf::fs_scheme{'base'}{'/usr/obj'}{'zps_um'},$Val::zfs_ps);
+        }
+
+    } elsif ( $function eq "production" ) {
+
+        if ( defined $base_tmp ) {
+            zfs_set($base_tmp,"lue:mode","production",$Val::zfs_ps);
+            zfs_sets($base_tmp,$Conf::fs_scheme{'base'}{'/tmp'}{'zps_pm'},$Val::zfs_ps);
+        }
+        if ( defined $base_obj ) {
+            zfs_set($base_obj,"lue:mode","production",$Val::zfs_ps);
+            zfs_sets($base_obj,$Conf::fs_scheme{'base'}{'/usr/obj'}{'zps_pm'},$Val::zfs_ps);
+        }
+
+    }
+
+}
+
+sub switch_over_jail_lue {
+
+    my ($jname, $function, $cur_version, $new_version, $cur_rootfs, $new_rootfs) = @_;
+
+    if ( $function eq "usual" || $function eq "start" ) {
+
+        print "\n\n>>zLUe> Would you like to start LUEnvironment of '$new_version' version:\n";
+        print "\t\t- 'Y' - right now\n";
+        print "\t\t- 'S' - or after reboot\n";
+        if ( check_yesno("","Y/S","Y") ) {
+
+            stop_jail_lue($jname,$cur_version,$cur_rootfs) if ( $function eq "usual" );
+            start_jail_lue($jname,$new_version,$new_rootfs);
+
+        }
+
+
+    } elsif ( $function eq "stop" ) {
+
+        if ( check_yesno("You should stop LUE of '$cur_version' version, because of init version is 'nolue'","Y/S","Y") ) {
+
+            stop_jail_lue($jname,$cur_version,$cur_rootfs);
+
+        }
+
+    }
+
+}
+
+sub start_jail_lue {
+
+    my ($jname, $version, $root_fs) = @_;
+
+    my ($input_command,$answer);
+
+    if ( $version ne "first" ) {
+        print "\n=> Mounting LUE of '$version' version\n";
+        mount_recursively($root_fs);
+
+    }
+
+    print "\n>>zLUe> You should start '$jname' jail by:\n";
+    print "\t\t- 'Y' - '$Conf::jail_script start $jname'\n";
+    print "\t\t- 'A' -  or another command.\n";
+    $input_command = "$Conf::jail_script start $jname";
+    if ( $answer = check_yesno("","Y/A/N/S","Y",$input_command) ) {
+         exec_sh("yes",$answer);
+    }
+    sleep 1;
+
+}
+
+sub stop_jail_lue {
+
+    my ($jname, $version, $root_fs) = @_;
+
+    my ($input_command,$answer);
+
+    print "\n>>zLUe> You must stop '$jname' jail by:\n";
+    print "\t\t- 'Y' - '$Conf::jail_script stop $jname'\n";
+    print "\t\t- 'A' -  or another command.\n";
+    $input_command = "$Conf::jail_script stop $jname";
+    if ( $answer = check_yesno("","Y/A/N/S","Y",$input_command) ) {
+         exec_sh("yes",$answer);
+    }
+    sleep 1;
+
+    print "\n=> Umounting LUE of '$version' version\n";
+    umount_recursively($root_fs,"byfs");
+
+}
+
+sub upgrade_by_freebsd_update {
+
+    my ($chroot) = @_;
+
+    #my ($snapshot_version, $update_type) = @_;
+    #my $chroot = "$Conf::tmp_fsh/$Conf::fs_scheme{'base'}{'/'}{'fsn'}.$snapshot_version";
+
+    my @cmd;
+    my $tmp_dir = "tmp";
+    my $inputed_answer;
+
+    if ( check_yesno("Start to update system by freebsd-update with this tools 'Y' or manually 'S'","Y/N/S","Y") ) {
+
+        if ( check_yesno("Start to update system within current release 'Y' or another release 'S'","Y/N/S","Y") ) {
+
+            exec_chroot_sh("$chroot","$tmp_dir","freebsd-update fetch && freebsd-update install");
+
+        } else {
+
+            print "You has choose update to another release, input version of the release (8.1-RELEASE, for example)> ";
+            $inputed_answer = <STDIN>;
+            chomp $inputed_answer;
+            exec_chroot_sh("$chroot","$tmp_dir","freebsd-update -r $inputed_answer upgrade && freebsd-update install && freebsd-update install");
+
+        }
+
+    } else {
+
+        print "\n>>zLUe> You has choose 'manual' way of upgrading.\n";
+        print ">>zLUe> You should move into chroot environment ( chroot $chroot ) and update system.\n";
+        check_yesno("Type 'Y' and press enter after update to init LUEnvironment.","Y",undef);
+
+    }
+
+}
+
+sub replace_in_file {
+    
+    my ($file, $oldstr, $newstr) = @_;
+    my (@oldfile, $str);
+    my $newstr_status = 0;
+
+    print "\n\tReplace in file $file pattern '$oldstr':\n";
+
+    if ( !defined $Val::showonly ) {
+
+        open (FILE,"< $file") || die "Can't open $file:$!";
+        @oldfile = <FILE>;
+        close FILE;
+
+        open (FILE,"> $file") || die "Can't open $file:$!";
+        foreach $str ( @oldfile ) {
+    
+            if ( $str !~ /$oldstr/ ) {
+                print FILE "$str";
+            } else {
+                print FILE "$newstr\n";
+                chomp $str;
+                print "\t\t'$str' -> '$newstr'.\n";
+                $newstr_status = 1;
+            }
+
+        }
+
+        if ( $newstr_status == 0 ) {
+            print "\t\tthis string does not exist, add the string '$newstr'.\n";
+            print FILE "$newstr\n";
+        }
+
+        close FILE;
+
+    }
+
+}
+
+
+sub print_symbol {
+
+    my ($symbol, $number) = @_;
+    my $n = 0;
+
+    while ( $n < $number ) {
+        print "$symbol";
+        $n = $n + 1;
+    }
+
+}
+
+sub finish_annotate {
+
+    my ($jname,$new_jfs,$snapshot_version) = @_;
+
+        print "\n\nIf all has passed successfully:\n";
+        print "\t 1) start jail $jname ( $Conf::jail_script start $jname )\;\n";
+        print "\t 2) to install/update soft set $new_jfs to 'update' mode ( zjail modify-env $jname update )\;\n";
+        print "\t 3) don't forget delete old snapshots and LUE !\n\n";
+
+}
