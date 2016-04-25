@@ -1,7 +1,3 @@
-## zLUe
-
-zLUe is a Perl-based toolset for installing, upgrading, and managing the FreeBSD base system and Jail containers, leveraging ZFS volume features for efficient snapshotting, cloning, and storage management.
-=======
 # zLUe - ZFS Live Update Environment
 
 **zLUe** (ZFS Live Update Environment) is a Perl-based toolkit for creating, updating, and managing a **Live Update** environment for the **FreeBSD** base system and **jails** on **ZFS**.
